@@ -1,0 +1,64 @@
+This repository is a derivative work. Read this section before redistributing.
+
+本仓库是衍生作品，再分发前请先阅读本节。
+
+---
+
+Provenance / 来源
+
+Open Reasoning — s-JoL, https://github.com/s-JoL/open-reasoning
+
+That project published the demo and a set of unlocked examples, but not the
+recovery implementation. It was reachable when this work began and now returns
+HTTP 404. `static/index.html` here is a vendored copy of its demo frontend,
+included for reproducibility; copyright remains with its original author.
+
+该项目发布了演示与一组解锁样例，但未公开还原实现。本工作开始时该仓库可访问，现返回
+HTTP 404。本仓库的 `static/index.html` 是其演示前端的 vendored 副本，仅为复现目的收录，
+版权归原作者所有。
+
+---
+
+Licensing status / 授权状态
+
+The upstream project carries no explicit licence grant. Absent a licence, default
+copyright applies and the copyright holder retains all rights. Forking a public
+GitHub repository is permitted by the GitHub Terms of Service, but that permission
+does not extend to relicensing inherited files or redistributing them outside
+GitHub. The MIT grant below therefore covers **only the original contributions of
+this repository**; it does not and cannot relicense the vendored frontend.
+
+上游项目没有明确的授权声明。在缺少许可证的情况下适用默认著作权，权利由著作权人保留。
+GitHub 服务条款允许 fork 公开仓库，但该许可不延伸至对继承文件的重新授权，也不覆盖在
+GitHub 之外的再分发。因此下方的 MIT 授权**仅适用于本仓库的原创贡献**，不对 vendored
+前端重新授权，也无权这样做。
+
+If you are the author of the upstream project and want attribution changed, a
+licence applied, or material removed, please open an issue.
+
+如果您是上游项目作者，希望调整署名、补充授权或移除相关内容，请提交 issue。
+
+---
+
+MIT License
+
+Copyright (c) 2026 the contributors to this repository, for its original
+contributions only.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
