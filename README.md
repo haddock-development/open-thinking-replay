@@ -165,6 +165,33 @@ Opus 4.6、Sonnet 4.6、Sonnet 5（解码器用 Haiku 4.5）都有效。对 Opus
 signature、40 多次解码尝试，零真实还原；换上任何一个兄弟模型都拒绝转录同一条 Opus 5 自己能
 解开的 signature。完整矩阵见下文[相关工作](#related-work--相关工作)。
 
+### Which one, for which situation / 该用哪个
+
+Four things people usually optimize for, and what actually wins on each:
+
+大家实际关心的四件事，分别该怎么选：
+
+| Optimizing for / 优先级 | Use / 用这个 | Command / 命令 |
+| --- | --- | --- |
+| Unconditional trust — training data, audits, anything you'd have to defend later<br>无条件可信——训练数据、审计、任何需要事后交代的场合 | Same-model, `--verify strict`<br>同模型，`--verify strict` | `extract_cot.py --verify strict` |
+| Source model is Opus 5 — no choice here<br>源模型是 Opus 5——没有别的选项 | Same-model (only option that works)<br>同模型（唯一可行） | `extract_cot.py` |
+| Cost, at volume, on Opus 4.8 / 4.6 / Sonnet 4.6 / 5<br>大批量、成本敏感，模型在 Opus 4.8/4.6/Sonnet 4.6/5 之列 | Cross-model, best-of-4<br>跨模型，best-of-4 | `cross_model_decode.py --samples 4` |
+| Source model keeps refusing plain transcription (Opus 4.8 on short problems is a known case)<br>源模型频繁拒绝直接转录（Opus 4.8 答短题时是已知会发生的情况） | Add reconciliation — priced like same-model, but it's the only thing that turns a refusal into a transcript<br>加 reconciliation——按同模型计价，但只有它能把拒绝变成还原 | `--reconcile` |
+| Fastest single answer, model pair already confirmed working<br>单条结果要快，模型组合已经确认可行 | Cross-model, one sample — same-model strict needs two sequential round-trips to confirm determinism, one cross-model sample doesn't wait on anything<br>跨模型单发——同模型 strict 要两次顺序往返才能确认确定性，跨模型单发不用等 | `cross_model_decode.py --samples 1` |
+| Sustained, high-volume extraction from a live pipeline, mostly Opus 5<br>面向持续运行的 pipeline 做大规模抽取，主力模型是 Opus 5 | Tiered worker — strict on small blocks, length-only on large ones, free zero-cost tier from harvest summaries<br>分档 worker——小 block 走 strict，大 block 只查长度，摘要档零成本 | `thinking_extract_worker.py` |
+
+Two rules of thumb underneath the table: same-model is the only thing that works on Opus 5,
+full stop, so that decision comes first regardless of what else you're optimizing for.
+Everything else is a cost/speed trade against `--verify strict`'s certainty — `length` alone
+is already strong evidence (§"honest limits" above), `--samples 4` is a bigger discount than
+`--reconcile` but doesn't fix a refusing source model, and reconciliation is the one lever
+that trades money for certainty rather than the other way round.
+
+表格下面两条经验规则：Opus 5 只有同模型能用，这一条先判断，跟其他优先级无关。除此之外都是
+拿成本/速度换 `--verify strict` 的确定性——单独用 `length` 档已经是很强的证据（见上文"诚实的
+边界"）；`--samples 4` 比 `--reconcile` 省得更多，但解决不了源模型本身拒绝转录的问题；
+reconciliation 是三者里唯一"花钱换确定性"而不是反过来的选项。
+
 ## Related work / 相关工作
 
 This repo's original scope is narrower and more conservative than the broader literature on
@@ -237,11 +264,15 @@ signature。它和能正常解码的 Sonnet 5 是同一代，所以不是"老模
 ## What's here / 仓库内容
 
 - **[ANALYSIS.md](ANALYSIS.md)** — the `signature` wire format (base64 protobuf wrapping an
-AEAD-encrypted copy of the private reasoning), entropy measurements, the length oracle, and
-the adjudication of whether recovery is verbatim.
+AEAD-encrypted copy of the private reasoning), entropy measurements, the length oracle, the
+adjudication of whether recovery is verbatim, and (§8) the single mechanism — replay
+triggers a server-side decrypt — underlying same-session, cross-user, and cross-model replay
+alike; they differ only in which binding the provider leaves unchecked.
 
   
-signature 的字段结构、熵值测量、长度预言机，以及「还原是否逐字」的判定过程。
+signature 的字段结构、熵值测量、长度预言机、「还原是否逐字」的判定过程，以及（§8）同会话、
+跨用户、跨模型回放背后共用的同一个机制——回放触发服务端解密——三者只是 provider 放开的绑定
+检查项不同。
 
 - **[docs/reproduction-log.md](docs/reproduction-log.md)** — every experiment run, including
 the failures: refusals, route outages, and the criterion changes that moved the numbers.

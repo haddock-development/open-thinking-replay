@@ -241,3 +241,63 @@ the restored context), but a verbatim-transcription elicitor is terminated by a 
 before any content block is emitted:
 `{"type":"refusal","category":"reasoning_extraction"}`, empty `content`, 2 of 2. Opus 5 and
 Opus 4.8 have no such category. See `docs/reproduction-log.md` §4b–§4d.
+
+## 8. One mechanism, three binding checks / 一种机制，三项绑定检查
+
+Every extraction technique in this repo, and in the two papers cited in §6, is the same
+primitive. The client holds an AEAD envelope it cannot decrypt (§1). Put that envelope into a
+request's message history as an `assistant.thinking` block, ask the model to recite "the
+reasoning attached to this turn," and the provider decrypts it server-side and feeds the
+plaintext back into the model's context. Nothing in this repo, and nothing in either cited
+paper, decrypts anything locally — every recovery happens because the *provider* decrypted it
+and handed the plaintext to a model that wrote it into a visible reply.
+
+The envelope's authenticated header (§1) carries enough fields to bind a replay to a specific
+session, user, and model. Which of those the provider actually checks at replay time is a
+policy choice, separate from the envelope format. Three published techniques are this one
+primitive with three different bindings left unchecked:
+
+| Technique | Binding not enforced | Source |
+| --- | --- | --- |
+| In-/cross-session replay | session | this repo's baseline (§2, §4); Green (2026) |
+| Cross-user replay | user/account | Green (2026); Panfilov et al. (2026) §4.1 |
+| Cross-model replay | model | §6 above; Panfilov et al. (2026); `docs/reproduction-log.md` §8.6 |
+
+Read this way, the `claude-opus-5` result in §6 stops being a puzzle. Opus 5 isn't running
+different cryptography — same envelope format, same length oracle, same server-side
+decrypt-and-reinject (it decodes its own signature byte-exactly). What's different is that
+the model-binding check, off for every other Claude model measured, looks like it's on for
+this one. One binding flipped, not a new mechanism.
+
+This is also why local verification matters no matter which binding a technique exploits.
+The provider never hands back a receipt saying "this replay was policy-compliant, here's the
+untouched plaintext." Whatever comes back — same-model, cross-user, cross-model — could just
+as easily be a refusal or a paraphrase (§7). The length oracle and determinism check (§7)
+don't care which binding was left open; they're the only way to tell a real decrypt from an
+improvisation without asking the provider to vouch for anything.
+
+本仓库及 §6 所引两篇文献里的每一种提取手法，本质是同一个原语：客户端持有一个自己解不开的
+AEAD 信封（见 §1）；把它塞进某次请求的历史消息，作为一个 `assistant.thinking` 块，再要求
+模型"复述这一轮附带的推理"，provider 就会在服务端解密，把明文喂回模型上下文。本仓库、以及
+所引两篇论文，都没有在本地做过任何解密——每一次还原都是 *provider* 自己解密，再交给模型写进
+可见回复。
+
+信封的认证头部（见 §1）里带着足够绑定到具体会话、用户、模型的字段，但 provider 在回放时
+实际检查了哪几项，是策略选择，与信封格式本身无关。三种已发表的技术，就是这一个原语，分别对应
+三种"未被强制检查"的绑定：
+
+| 技术 | 未被强制的绑定 | 出处 |
+| --- | --- | --- |
+| 同/跨会话回放 | 会话 | 本仓库基线方法（§2、§4）；Green (2026) |
+| 跨用户回放 | 用户/账号 | Green (2026)；Panfilov 等 (2026) §4.1 |
+| 跨模型回放 | 模型 | 上文 §6；Panfilov 等 (2026)；`docs/reproduction-log.md` §8.6 |
+
+这样看，§6 里 `claude-opus-5` 的结果就不再是个谜。Opus 5 用的不是另一套密码学——同样的信封
+格式、同样的长度预言机、同样的服务端解密再注入（它能逐字节解开自己的 signature）。变了的是
+模型绑定检查：在我们测过的其他 Claude 模型上都是关的，在这一个模型上看起来是开的。是一项绑定
+被打开，不是换了机制。
+
+这也是为什么本地验证不管利用哪项绑定都同样重要：provider 不会给你一张"这次回放合规、明文
+未被改动"的凭证。不管是同模型、跨用户还是跨模型，拿回来的东西都可能是拒绝或改写（见 §7）。
+长度预言机与确定性检查（见 §7）跟具体利用了哪项绑定无关，是唯一能在不要求 provider 自证的
+情况下区分"真实解密"和"模型现编"的办法。
