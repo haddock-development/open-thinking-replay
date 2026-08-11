@@ -149,6 +149,17 @@ for local development (`UPSTREAM_BASE` in the uncommitted `.env`), **not** the o
 reject the cross-model replay. Treat cross-model decode as a property of *that* gateway's policy,
 not a guarantee of the wire format itself.
 
+**Related, independent work.** Panfilov et al., ["Stealing Reasoning Traces from
+Proprietary LLM APIs"](https://arxiv.org/abs/2608.09867) (arXiv:2608.09867, 2026), report
+the same absence of model-binding enforcement at replay time as a general property across
+Claude, GPT, and Gemini, and turn it into a scalable extraction method by deliberately
+targeting the *weakest, least-safeguarded* sibling model as a decoder rather than a
+same-family model chosen for capability. We reproduced their Claude method
+(`tools/cross_model_decode.py`): confirmed on `claude-opus-4-8 → claude-haiku-4-5-20251001`,
+not confirmed on `claude-opus-5` (a model that postdates their stated test window) — see
+README ["Related work"](README.md#related-work--相关工作) and
+`docs/reproduction-log.md` §8.6 for the full comparison.
+
 ## 7. Verbatim recovery adjudication (H0 vs H1)
 
 Measured on Distill route `naci_default` / `claude-sonnet-4-6` (55 upstream calls; report kept

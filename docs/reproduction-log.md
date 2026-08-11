@@ -610,3 +610,195 @@ sealed plaintexts beyond roughly 1.4 KB.
 | `strict5_aws_third_route_report` | §4d Fable 5 strict run via Bedrock |
 | `fable5_replay_diagnosis_report` | §4d plant-vs-plain and verbatim-vs-neutral diagnosis |
 | `aime2025_strict_anthropic_report` | §4e AIME 2025, 4 Opus models × 5 problems, KB-scale traces |
+
+---
+
+## 8. Multi-turn pipeline extraction and cross-model decoding / 多轮 pipeline 抽取与跨模型解码
+
+Sections 1–7 harvest a signature for one question and replay it with just that question as
+context — the right shape for a controlled experiment. `tools/extract_pipeline_capture.py`
+and `tools/thinking_extract_worker.py` instead consume signatures already produced by a
+live, multi-turn, tool-using agent session (arbitrary tool-call depth ahead of any given
+`thinking` block), which raises two questions this section answers empirically: what should
+the replay request contain, and does the model that produced a signature have to be the one
+that decodes it.
+
+### 8.1 Replay context sensitivity — minimal prefixes recover better than full context
+
+**Setup.** Given a signature captured mid-session, three replay prefixes were compared:
+(a) the full original multi-turn transcript up to that point, (b) only the single user
+message immediately preceding the `thinking` block (`last_user` in
+`extract_pipeline_capture.py`), (c) a content-free placeholder (`minimal`, "Continue.").
+
+**Finding.** Replaying with the full original context did not improve recovery and was
+refused more often — plausibly because a long, substantive preceding turn reads to the
+model as an established, contextually-loaded exchange it should not casually recite from
+("this looks like a private scratchpad"), whereas a short or content-free prefix reads as a
+generic continuation request. `last_user` recovered cleanly in the large majority of cases
+in this trial and is the default strategy tried first; `minimal` is the fallback. **Cost
+implication:** never resend deep tool-call history for replay — it does not help recovery
+and inflates every retry's input-token cost for long-running agent sessions.
+
+**结论**：用完整原始多轮上下文回放并不能提升还原率，反而更容易被拒绝——较长、有实质内容的
+前一轮更像是模型不应随意复述的「私有草稿」，而短的或无内容的前缀更像是一次普通的续写请求。
+`last_user`（仅取 thinking block 前的最后一条 user 消息）在本次试验中多数情况下能干净还原，
+是默认首选策略；`minimal`（无内容占位符）作为回退。**成本含义**：回放时不应重发深层工具调用
+历史——这既不提升还原率，又会在长会话下让每次重试的输入 token 成本显著膨胀。
+
+### 8.2 Interleaved thinking + tool use requires a synthetic `tool_result`
+
+**Problem.** When a `thinking` block is immediately followed by one or more `tool_use`
+blocks in the same assistant turn (Claude's interleaved-thinking pattern), naively
+truncating the conversation at that `thinking` block and appending the elicitor as the next
+user turn produces `HTTP 400: tool_use_id was found without tool_result blocks
+immediately after` — the API's structural validator requires every `tool_use` to be
+followed by a matching `tool_result`, and a truncated replay strips it.
+
+**Fix.** For any `tool_use` blocks in the assistant turn that follows the target `thinking`
+block, synthesize a placeholder `tool_result` (`"(elided for extraction — not the original)"`)
+before appending the elicitor turn. This satisfies the API's structural requirement without
+resending the original (possibly large, and per §8.1 unhelpful) tool output. See
+`sanitize_standalone_user_message` / the `pending_tool_ids` handling in
+`extract_pipeline_capture.py`.
+
+**问题**：当 `thinking` 块后紧跟同一 assistant 轮次内的一个或多个 `tool_use` 块（Claude 的
+interleaved thinking 模式）时，若简单截断到该 `thinking` 块再接一个 user 轮次的引导语，会触发
+`HTTP 400: tool_use_id was found without tool_result blocks immediately after`——API 的结构
+校验要求每个 `tool_use` 后必须紧跟匹配的 `tool_result`，截断回放会把它删掉。
+**修复**：为紧跟在目标 `thinking` 块之后的每个 `tool_use`，合成一个占位 `tool_result`
+（`"(elided for extraction — not the original)"`）后再接引导语轮次，既满足 API 的结构要求，又
+不必重发（§8.1 已证明无益的）原始工具输出。
+
+### 8.3 A length-oracle-first ordering avoids discarding genuine long recoveries
+
+**Bug.** An earlier version of the refusal heuristic (a keyword scan for phrases like
+"I can't", "I don't have access to", etc.) ran *before* checking the recovered text against
+the length oracle. On long, genuine multi-step agent reasoning, ordinary turns of phrase —
+"I can't just do X, I need to..." — coincidentally match refusal markers despite being
+ordinary content, not a meta-refusal about the extraction request. Because the check ran
+first, correct byte-exact recoveries were discarded as false "refusals" and retried,
+wasting the retry budget on already-successful extractions.
+
+**Fix.** Check the length oracle first: an exact `len(recovered_utf8) == sealed_bytes` match
+is cryptographic proof of a genuine recovery *regardless of what words appear in it* (see
+§1's length-oracle argument — a re-derivation or summary would have to land on the exact
+target length by chance, which is not plausible on multi-hundred-byte-or-larger traces).
+Only apply the refusal heuristic to attempts that do **not** already satisfy the length
+oracle. See the ordering in `extract_block()` in `extract_pipeline_capture.py`.
+
+**缺陷**：拒绝启发式（对"I can't"等关键词做扫描）曾在长度预言机判定之前执行。长而真实的多步
+agent 推理里，普通的转折句式——"I can't just do X, I need to..."——会偶然命中拒绝关键词，但
+这是内容本身，不是对提取请求的元层面拒绝。由于该检查先执行，正确的逐字节还原被误判为"拒绝"
+并触发不必要的重试，浪费了本可用于其他信号的重试预算。
+**修复**：先做长度预言机检查——`len(recovered_utf8) == sealed_bytes` 精确匹配是密码学层面的
+真实还原证据，与文本里出现什么词无关（重新推导或摘要几乎不可能恰好落在目标字节数上）。只对
+**没有**满足长度预言机的尝试才应用拒绝启发式。
+
+### 8.4 Tiered verification for cost-controlled bulk extraction
+
+For bulk extraction across a large signature population with a wide size distribution,
+applying full `--verify strict` (length **and** determinism, i.e. two replay calls per
+block minimum) to every block is not cost-proportional: large blocks (tens of KB sealed)
+cost far more per attempt than small ones, while the length oracle alone is already strong
+evidence at that scale (a re-derivation landing on an exact multi-KB byte count by chance is
+not plausible — see the "honest limits" note in the main README). The tiering implemented
+in `extract_pipeline_capture.py` / `thinking_extract_worker.py`:
+
+- Blocks below `--large-threshold-bytes` (default 4000 B): full `--verify strict`.
+- Blocks at or above the threshold: `length`-tier only (one match against the byte-exact
+  target is accepted), with an optional single extra confirmation replay on a random sample
+  of large blocks (`--strict-sample-count` per worker lifetime) purely for calibration —
+  the sampled confirmation must **never** cost more than the standard length-tier path for
+  the same block (an earlier version accidentally forced the full strict/attempts budget
+  onto sampled blocks, making calibration ~50% more expensive than the blocks it was meant
+  to calibrate against; fixed by giving the sample only one extra call, not a different
+  verification tier).
+- If no attempt hits the length oracle exactly but the closest attempt is within
+  `--near-miss-bytes`, it is accepted as `verification: "approximate"` and flagged
+  `near_miss: true` for manual review rather than silently discarded or silently trusted.
+
+批量场景对全部 block 都做完整 `--verify strict`（长度**且**确定性，即每个 block 至少两次回放）
+不符合成本比例：大体量 block（密封数万字节）单次尝试成本远高于小体量，而在这个量级上长度预言
+机本身已是很强的证据（重新推导恰好落在多 KB 精确字节数上不具备可信的概率）。分档策略：低于
+`--large-threshold-bytes`（默认 4000 字节）的 block 做完整 `strict`；达到或超过阈值的 block
+只走 `length` 档（命中即收），并对随机抽样的一部分大体量 block 做一次额外确认回放用于校准
+（抽样确认成本不应超过普通 length 档路径本身）；若没有尝试精确命中长度预言机，但最接近的一次
+在 `--near-miss-bytes` 容差内，则标记为 `approximate` 并打上 `near_miss` 供人工复核，而不是
+静默丢弃或静默采信。
+
+### 8.5 Free zero-cost tier from harvest-time summaries
+
+If the harvest request already carried `thinking.display: "summarized"`, the (paraphrased,
+non-verbatim) summary text sitting in the capture record can be used as-is, at zero
+additional cost, for blocks below `--free-summary-threshold-bytes` (default 4000 B) —
+labeled `verification: "summary"` and never mistaken for a byte-exact recovery downstream.
+Measured on a real multi-hundred-block batch, this summary averaged roughly 88% of the
+byte-exact recovery's length for small blocks and captured the same core decision in
+paraphrased form; the value of paying for byte-exact verbatim recovery is concentrated in
+the large blocks, where a summary is necessarily a much lossier compression of the actual
+reasoning. See `free_summary_extraction()` / `free_summary_text()`.
+
+若 harvest 请求已带 `thinking.display: "summarized"`，捕获记录中已有的（改写、非逐字的）摘要
+文本可以零成本直接用于低于 `--free-summary-threshold-bytes`（默认 4000 字节）的 block，标记为
+`verification: "summary"`，不会被下游误当作逐字还原。在一次数百 block 的真实批量运行中测得，
+该摘要对小体量 block 平均达到逐字还原长度的约 88%，并以改写形式保留了同样的核心决策；为逐字
+还原付费的价值集中在大体量 block 上，那里摘要必然是对真实推理更有损的压缩。
+
+### 8.6 Cross-model decoding: reproducing and bounding Panfilov et al. (2026)
+
+Panfilov et al., ["Stealing Reasoning Traces from Proprietary LLM APIs"](https://arxiv.org/abs/2608.09867)
+(arXiv:2608.09867, 2026) report an architectural finding beyond this repo's original,
+same-model scope: within a provider's model family, an encrypted `thinking` signature
+produced by one model can be replayed into a *different*, weaker, less-safeguarded sibling
+model, which can be induced to transcribe it verbatim — e.g. their demonstrated Claude pair,
+injecting an Opus 4.8 signature into Haiku 4.5 with a fixed current-turn, assistant-prefill
+template (their Fig. 33). This is a materially different threat model from every other
+section of this log: the *decoding* model is never the model whose reasoning is recovered,
+so the attack never has to get past the stronger model's own alignment or system-level
+defenses at all.
+
+We reproduced this independently against our own Distill account (`claude-haiku-4-5-20251001`
+via `provider=anthropic`) to check both (a) whether the vulnerability is still live as of
+this writing, and (b) whether it extends to the newer `claude-opus-5`, which postdates the
+paper's stated July 2026 test window.
+
+| Source signature | Target decoder | Injection | Result |
+| --- | --- | --- | --- |
+| `claude-opus-4-8` (fresh harvest, `effort=medium`) | `claude-haiku-4-5-20251001` | current-turn + assistant prefill | **Byte-exact match** against a same-model ground truth obtained via `last_user`-style replay |
+| `claude-opus-5` (5 signatures, 25 B–13,181 B sealed, all independently `strict`-verified) | `claude-haiku-4-5-20251001` | current-turn + assistant prefill, and past-turn | **6/6 failed** — decoder reported no attached prior reasoning to transcribe, every attempt |
+
+**Reading.** The cross-model path is real and, as of this writing, not universally patched —
+it reproduces cleanly on `claude-opus-4-8`. It does **not** currently transfer to
+`claude-opus-5` signatures via the paper's template: six attempts across two injection
+styles (current-turn+prefill and past-turn) on five real, independently byte-exact-verified
+signatures all failed identically, with the decoder claiming it saw no injected reasoning at
+all — a qualitatively different, and more decisive, failure than the paper's documented
+"confused, claims no context" noise category (which they describe as occasional, not
+systematic). Root cause is unconfirmed from outside the provider: candidates are (i) a newer
+signature/key scheme on `claude-opus-5` that the decoder's cross-model validation path does
+not recognize, postdating the paper's test window, or (ii) a provider-side mitigation
+targeting the newer model specifically, consistent with the paper's own note that model
+providers were "unable to launch the same attacks" after responsible disclosure. This
+project's `claude-opus-5` extraction pipeline (§8.1–§8.5) therefore continues to rely on
+same-model replay; the cross-model path is documented here as a validated, much cheaper
+alternative that applies specifically to `claude-opus-4-8` (and, per the paper, other
+"4.x"-generation Claude models), should a use case need those instead.
+
+Panfilov 等人的论文（[arXiv:2608.09867](https://arxiv.org/abs/2608.09867)）报告了一个超出
+本仓库原始同模型范围的架构性发现：在同一供应商的模型家族内，一个模型产生的加密 `thinking`
+signature 可以被回放进家族内**另一个更弱、防护更少**的模型，并诱导其逐字转录——例如论文展示的
+Claude 案例，把一个 Opus 4.8 的 signature 注入 Haiku 4.5，用固定的 current-turn + assistant
+prefill 模板（其 Fig. 33）。这是一个本质不同的威胁模型：负责**解码**的模型从来不是被还原推理
+的那个模型，因此攻击完全不需要绕过更强模型自身的对齐或系统级防御。
+
+我们在自己的 Distill 账号上独立复现了这一方法（`claude-haiku-4-5-20251001`，
+`provider=anthropic`），以检验：(a) 该漏洞截至目前是否仍然存在；(b) 是否能扩展到晚于论文所述
+2026 年 7 月测试窗口的更新模型 `claude-opus-5`。结果：对新鲜 harvest 的 `claude-opus-4-8`
+signature 复现成功，Haiku 4.5 的输出与同模型回放得到的 ground truth 逐字节一致；但对 5 条已经
+独立 `strict` 验证过的真实 `claude-opus-5` signature（25 B 到 13,181 B），用两种注入格式共
+6 次尝试全部失败，解码器每次都声称没有看到任何附加的先前推理。这一失败模式比论文自述的「偶发
+困惑」更彻底、更一致，根本原因未查明：可能是 `claude-opus-5` 使用了论文测试窗口之后更新的
+signature/密钥方案、跨模型解码路径尚未识别，也可能是供应商已针对新模型专门上线了缓解措施（与
+论文披露后"厂商已无法再复现相同攻击"的说法一致）。本项目对 `claude-opus-5` 的抽取流程
+（§8.1–§8.5）因此仍依赖同模型重放；跨模型路径在此记录为一个已验证、成本低得多、但目前仅确认
+适用于 `claude-opus-4-8`（及论文中提到的其他"4.x"代 Claude 模型）的备选方案。

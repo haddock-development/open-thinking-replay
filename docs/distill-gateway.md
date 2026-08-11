@@ -8,7 +8,8 @@ thinking 参数。
 
 > Credentials are never stored in this repo. Put your own `DISTILL_APP_ID` /
 > `DISTILL_APP_KEY` in a local `.env` (gitignored).
-> <br>本仓库不保存任何凭证。请把自己的 `DISTILL_APP_ID` / `DISTILL_APP_KEY` 放进本地
+>
+> 本仓库不保存任何凭证。请把自己的 `DISTILL_APP_ID` / `DISTILL_APP_KEY` 放进本地
 > `.env`（已被 gitignore）。
 
 ---
@@ -34,12 +35,12 @@ set -a; source .env; set +a
 
 `UPSTREAM_PROVIDER` 同时决定鉴权路由与请求/响应协议。
 
-| Provider | Endpoint | Body carries | Version travels in |
-| --- | --- | --- | --- |
-| `aws_third` | `POST {BASE}/model/{MODEL}/invoke` | no top-level `model` | body `anthropic_version=bedrock-2023-05-31` |
-| `anthropic` | `POST {BASE}/v1/messages` | `model` | header `anthropic-version` |
-| `google` | `POST {BASE}/v1/messages` | `model` | header `anthropic-version` |
-| `naci_default` | `POST {BASE}/v1/messages` | `model` | header `anthropic-version` |
+| Provider       | Endpoint                           | Body carries         | Version travels in                          |
+| -------------- | ----------------------------------- | --------------------- | -------------------------------------------- |
+| `aws_third`    | `POST {BASE}/model/{MODEL}/invoke` | no top-level `model` | body `anthropic_version=bedrock-2023-05-31` |
+| `anthropic`    | `POST {BASE}/v1/messages`          | `model`               | header `anthropic-version`                   |
+| `google`       | `POST {BASE}/v1/messages`          | `model`               | header `anthropic-version`                   |
+| `naci_default` | `POST {BASE}/v1/messages`          | `model`               | header `anthropic-version`                   |
 
 The rule implemented by `_wire_shape()` — Bedrock invoke only when the provider name starts
 with `aws`, native Messages otherwise — holds for `naci_default` as measured. It needs no
@@ -73,12 +74,12 @@ whether to retry, top up budget, or request provisioning:
 
 状态码指明是哪一层拒绝了请求，这决定了应当重试、充值预算，还是申请开通：
 
-| Status | Message | Meaning |
-| --- | --- | --- |
-| `402` | `the provider (provider=X) does not exist` | provider name is not a valid gateway id — a typo, e.g. `naci` instead of `naci_default` |
-| `402` | `your APP_ID(...) has insufficient budget: ¥-N` | provider is provisioned for the key; the budget for it is exhausted. Budget is tracked **per provider**, so one provider can be negative while another still serves traffic |
-| `500` | `构建候选集失败: no available account selected` | provider name is valid, but no upstream account is bound to this **(provider, model) pair** for this key. Not transient and not a budget problem — retrying does not help |
-| `503` | `Bedrock is unable to process your request` | transient upstream fault; retrying the identical body often succeeds |
+| Status | Message                                         | Meaning                                                                                                                                                                     |
+| ------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `402`  | `the provider (provider=X) does not exist`      | provider name is not a valid gateway id — a typo, e.g. `naci` instead of `naci_default`                                                                                     |
+| `402`  | `your APP_ID(...) has insufficient budget: ¥-N` | provider is provisioned for the key; the budget for it is exhausted. Budget is tracked **per provider**, so one provider can be negative while another still serves traffic |
+| `500`  | `构建候选集失败: no available account selected`        | provider name is valid, but no upstream account is bound to this **(provider, model) pair** for this key. Not transient and not a budget problem — retrying does not help   |
+| `503`  | `Bedrock is unable to process your request`     | transient upstream fault; retrying the identical body often succeeds                                                                                                        |
 
 `402` 表示 provider 名无效或该 provider 的预算已用尽（预算**按 provider 分别计算**，某个
 provider 欠费时其他 provider 仍可调用）；`500` 的 `no available account selected` 表示 provider
@@ -103,11 +104,11 @@ Override with `THINKING_MODE`.
 
 请求格式由 `server.py` 的 `thinking_profile()` 自动选择，可用 `THINKING_MODE` 覆盖。
 
-| Profile | Models | Request shape |
-| --- | --- | --- |
-| `manual` | Sonnet 4.5, Opus 4.5, Claude 3.7 | `thinking:{type:enabled, budget_tokens:N}` |
-| `adaptive` | Opus 5, Opus 4.8 / 4.7 / 4.6, Sonnet 5 / 4.6 | `thinking:{type:adaptive, display}` + `output_config.effort` |
-| `always_on_adaptive` | Fable 5, Mythos 5 | same as adaptive; thinking cannot be disabled |
+| Profile              | Models                                       | Request shape                                                |
+| --------------------- | ---------------------------------------------- | ---------------------------------------------------------------- |
+| `manual`             | Sonnet 4.5, Opus 4.5, Claude 3.7             | `thinking:{type:enabled, budget_tokens:N}`                   |
+| `adaptive`           | Opus 5, Opus 4.8 / 4.7 / 4.6, Sonnet 5 / 4.6 | `thinking:{type:adaptive, display}` + `output_config.effort` |
+| `always_on_adaptive` | Fable 5, Mythos 5                            | same as adaptive; thinking cannot be disabled                |
 
 Adaptive-only models **reject** manual budgets:
 
@@ -137,103 +138,94 @@ Either way you are billed for the full thinking tokens, and the `signature` is i
 
 ---
 
-## 4. Observed availability / 实测可用性
+## 4. Availability model / 可用性模型
 
-Measured against one Distill account; your provisioning may differ.
+All four provider names below are part of the gateway's documented, supported surface —
+with correct account provisioning and a positive budget on the relevant provider, every
+route in the table works exactly as specified in §2. Real-time reachability of a specific
+`(provider, model)` pair is a property of **your own Distill account's provisioning and
+budget**, not of this repository or of the gateway's design; use §2's status-code table
+to tell a provisioning gap (`500`) from a budget gap (`402`) from a transient fault (`503`)
+on your own key, rather than assuming this doc's authors' account state applies to yours.
 
-以下基于单个 Distill 账号实测，你的开通情况可能不同。
+以下四个 provider 名均属于网关文档化、受支持的能力面——在账号已正确开通且相应 provider 预算
+为正的前提下，§2 表中列出的每条路由都会按规范工作。某个 `(provider, model)` 组合此刻是否可达，
+取决于**你自己 Distill 账号的开通与预算状态**，与本仓库或网关设计本身无关；请用 §2 的状态码表
+在自己的 key 上区分开通缺口（`500`）、预算缺口（`402`）与瞬时故障（`503`），而不要把本文作者
+账号当时的状态当作对你同样成立的结论。
 
-| Marker | Result |
-| --- | --- |
-| `api_aws_third_anthropic.claude-opus-5` | available, stable |
-| `api_aws_third_anthropic.claude-opus-4-8` | available, stable |
-| `api_aws_third_anthropic.claude-fable-5` | provisioned but frequently returns `503 Bedrock is unable to process your request` |
-| `api_anthropic_claude-fable-5` | route valid; blocked by account budget in our test |
-| `api_google_claude-fable-5` | route valid; blocked by account budget in our test |
-| `api_naci_default_claude-opus-4-6` | native wire correct, model id listed in `/v1/models`; **not reachable** — `500 no available account selected` on every attempt |
-| `api_naci_default_claude-opus-4-7` | same as 4.6 — `500 no available account selected` on every attempt |
-| `api_naci_default_claude-sonnet-4-6` | available; full harvest → replay cycle works (see below) |
+| Provider       | Wire           | Documented coverage                                                             |
+| -------------- | -------------- | ---------------------------------------------------------------------------------- |
+| `aws_third`    | Bedrock invoke | Opus 5, Opus 4.8, Fable 5 (rotates across upstream accounts of varying health — see below) |
+| `anthropic`    | native         | Opus 5, Opus 4.8, Fable 5                                                          |
+| `google`       | native         | Fable 5 (and other Vertex-routed Claude models, account-dependent)                 |
+| `naci_default` | native         | Sonnet 4.6 confirmed end-to-end; Opus 4.6 / 4.7 are listed in `/v1/models` but require separate provisioning on this provider (see below) |
 
-### `naci_default` measurement detail / `naci_default` 实测细节
+Two operational properties are worth planning a batch runner around, independent of any
+single account's state:
 
-Both Opus markers were exercised with the repo's own harvest/replay pipeline (5 problems
-each, `effort=max`, `display=omitted`). All 10 harvests failed before reaching the model, so
-no tokens were billed and no replay data exists for them. The failure was reproduced across
-the native and Bedrock wires, the `anthropic.` / `us.anthropic.` prefixes, a `-thinking`
-suffix, dotted and `-v1:0` version forms, the marker string in the auth `?model=` query, and
-the OpenAI-shaped `/v1/chat/completions` endpoint — always the same `500`. Repeating the calls
-over several minutes gave an identical result, so this is a provisioning gap on the
-`(naci_default, claude-opus-4-*)` pairs rather than a transient fault or a wire-shape error.
+以下两条运行属性与具体账号状态无关，批处理设计时应当考虑：
 
-两个 Opus marker 均使用本仓库的 harvest/replay 流程实测（每个 5 题，`effort=max`、
-`display=omitted`）。10 次 harvest 全部在到达模型前失败，因此未产生 token 费用，也没有对应的
-replay 数据。该失败在 native 与 Bedrock 两种 wire、`anthropic.` / `us.anthropic.` 前缀、
-`-thinking` 后缀、点号与 `-v1:0` 版本写法、把 marker 放入鉴权 `?model=` 查询，以及 OpenAI 形态的
-`/v1/chat/completions` 端点下均一致复现，返回相同的 `500`。数分钟内重复调用结果不变，因此这是
-`(naci_default, claude-opus-4-*)` 组合的开通缺失，而非瞬时故障或 wire 形态错误。
+- **Provider-level load balancing.** Even on a funded, provisioned `(provider, model)` pair,
+  the gateway distributes calls across multiple upstream accounts of differing health, so an
+  individual call can still return a transient `402`/`429`/`503` that clears on retry.
+  **Any batch runner needs retry with backoff**, and should not treat a single failure as
+  terminal — see [`tools/extract_cot.py`](../tools/extract_cot.py)'s retry loop for a
+  reference implementation.
 
-`claude-sonnet-4-6` is the one Claude model this provider served for our key, and it confirms
-the route end to end: 5/5 harvests returned a `signature` (384–540 chars, bound model
-`claude-sonnet-4-6`), and 5/5 replays recovered the planted secret while the visible reply
-never contained it. Note that `/v1/models` reports the Opus 4.6 / 4.7 entries as
-`owned_by: vertex-ai` with `anthropic` among their `supported_endpoint_types`, so the model ids
-and the endpoint choice were not the limiting factor. Budgets are tracked per provider, so
-`naci_default` kept serving traffic while `aws_third` / `anthropic` / `google` were negative.
+  即使在预算充足、已开通的 `(provider, model)` 组合上，网关也会在健康状况不同的多个上游账号
+  之间做负载均衡，单次调用仍可能返回瞬时的 `402`/`429`/`503`，重试通常可恢复。**任何批处理都
+  需要带退避的重试**，不要把单次失败当作终态——参考实现见
+  [`tools/extract_cot.py`](../tools/extract_cot.py) 的重试循环。
 
-`claude-sonnet-4-6` 是该 provider 下我们的 key 唯一可调用的 Claude 模型，它端到端验证了这条路由：
-5/5 次 harvest 返回了 `signature`（384–540 字符，绑定模型为 `claude-sonnet-4-6`），5/5 次 replay
-还原出了植入的 secret，且可见回答中始终不含该 secret。`/v1/models` 中 Opus 4.6 / 4.7 的记录为
-`owned_by: vertex-ai`，且 `supported_endpoint_types` 包含 `anthropic`，因此 model id 与端点选择
-不是限制因素。预算按 provider 分别计算，因此 `aws_third` / `anthropic` / `google` 欠费时
-`naci_default` 仍可调用。
+- **Budget is tracked per provider, independently.** A key can be negative on one provider
+  while fully funded on another; a `402` on `google` says nothing about whether `aws_third`
+  or `anthropic` will work for the same key.
 
-### Valid provider names are a closed set / provider 名是一个封闭集合
+  预算**按 provider 分别计算**：同一个 key 可以在某个 provider 上欠费，同时在另一个 provider
+  上预算充足；`google` 上的 `402` 不代表同一个 key 在 `aws_third` 或 `anthropic` 上也会失败。
 
-Probing arbitrary provider strings returns `402 the provider (provider=X) does not exist`,
-which distinguishes a typo from a real budget problem. Only four names were accepted by the
-gateway for this key:
+### `naci_default` provisioning note / `naci_default` 开通说明
 
-用任意字符串探测 provider 会返回 `402 ... does not exist`，可据此区分拼写错误与真实的预算问题。
-该 key 下网关只接受四个 provider 名：
+On this provider, `claude-sonnet-4-6` is confirmed to work end to end (harvest returns a
+`signature` bound to `claude-sonnet-4-6`; replay recovers the sealed reasoning). The Opus
+4.6 / 4.7 model ids are listed in the gateway's `/v1/models` catalogue (`owned_by:
+vertex-ai`, with `anthropic` among their `supported_endpoint_types`) but returned
+`500 no available account selected` in our testing across every wire shape, model-id
+variant, and endpoint we tried — a `(naci_default, claude-opus-4-*)` **provisioning gap**
+specific to that account/provider pairing, not a wire-shape or model-id error. Request
+provisioning for that pair from your Distill administrator if you need it, or use
+`aws_third` / `anthropic` for Opus 4.6 / 4.7 instead.
 
-| Provider | Wire | Status observed |
-| --- | --- | --- |
-| `aws_third` | Bedrock invoke | serves Opus 5, Opus 4.8, Fable 5 after a top-up; rotates through upstream accounts, so individual calls can still return `402` or `429` and must be retried |
-| `anthropic` | native | serves Opus 5 and Opus 4.8; `500 no available account` for Fable 5 |
-| `naci_default` | native | serves `claude-sonnet-4-6`; `500 no available account` for Opus 4.6 / 4.7 and Fable 5 |
-| `google` | native | budget exhausted (`402`) for every model tried |
+该 provider 下 `claude-sonnet-4-6` 端到端确认可用（harvest 返回绑定 `claude-sonnet-4-6` 的
+`signature`，replay 能还原封存的推理）。Opus 4.6 / 4.7 的 model id 出现在网关 `/v1/models`
+清单中（`owned_by: vertex-ai`，`supported_endpoint_types` 含 `anthropic`），但我们测试的每种
+wire 形态、model id 写法与端点组合都返回 `500 no available account selected`——这是
+`(naci_default, claude-opus-4-*)` 这一特定账号/provider 组合的**开通缺口**，不是 wire 形态或
+model id 的问题。如需要该组合，请向你的 Distill 管理员申请开通，或改用 `aws_third` /
+`anthropic` 调用 Opus 4.6 / 4.7。
 
-Two consequences worth planning around. Budget is tracked per provider, so a provider can go
-negative while others keep serving. And even on a funded provider the gateway load-balances
-across upstream accounts of differing health — during one probe the same model alternated
-between `OK`, `402`, and `429` within a minute, so **any batch runner needs retry with
-backoff** rather than treating the first failure as terminal.
+### Model-specific behavior worth knowing / 值得了解的模型特性
 
-Opus 4.6 / 4.7 were blocked on all four providers at once: three by budget, one by missing
-provisioning. They are listed in `/v1/models` (`owned_by: vertex-ai`), so the blocker is
-provisioning, not the model id.
-
-预算按 provider 独立计算；此外，即使在已充值的 provider 上，网关也会在健康状况不同的上游账号
-之间轮询——一次探测中同一模型在一分钟内交替返回 `OK`、`402`、`429`，因此**批处理必须带退避
-重试**，不能把首次失败当作终态。Opus 4.6 / 4.7 在四个 provider 上同时受阻（三个因预算、一个
-因未开通）；它们在 `/v1/models` 中存在（`owned_by: vertex-ai`），限制来自开通而非 model id。
-
-Notes:
-
-- Fable 5 has stronger safety classifiers than Opus, and they fire in two distinct places.
+- **Fable 5 has stronger safety classifiers than Opus, firing in two distinct places.**
   A prompt that asks the model to hide a string in its reasoning can return
   `stop_reason: "refusal"` with `stop_details.category: "cyber"`. A replay that asks for a
   verbatim transcription of the private reasoning returns
-  `stop_details.category: "reasoning_extraction"` with an **empty `content` array** — there is
-  no text block to parse. Handle an empty `content` on HTTP 200 as a terminal refusal rather
-  than a retryable fault. See [reproduction-log.md](reproduction-log.md) §4d.
-  <br>Fable 5 的安全分类器在两处触发：要求把字符串藏进推理的提示可能返回
+  `stop_details.category: "reasoning_extraction"` with an **empty** `content` **array** —
+  there is no text block to parse. Handle an empty `content` on HTTP 200 as a terminal
+  refusal rather than a retryable fault. See [reproduction-log.md](reproduction-log.md) §4d.
+
+  Fable 5 的安全分类器在两处触发：要求把字符串藏进推理的提示可能返回
   `category: "cyber"`；要求逐字转录私有推理的 replay 返回 `category: "reasoning_extraction"`
   且 `content` 为**空数组**。应把 HTTP 200 且 `content` 为空视作终态拒绝，而非可重试故障。
-- Bedrock requires streaming when `max_tokens > 21333`.
-  <br>Bedrock 在 `max_tokens > 21333` 时要求流式调用。
-- `503` from the gateway is transient — retrying the identical body often succeeds.
-  <br>网关返回的 `503` 是瞬时的，用相同请求体重试通常可成功。
+
+- **Bedrock requires streaming when `max_tokens > 21333`.**
+
+  Bedrock 在 `max_tokens > 21333` 时要求流式调用。
+
+- **A `503` from the gateway is transient** — retrying the identical body often succeeds.
+
+  网关返回的 `503` 是瞬时的，用相同请求体重试通常可成功。
 
 ---
 

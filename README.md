@@ -121,6 +121,62 @@ models hit the cap on AIME I P15 and answered wrong). The ceiling is 128000.
 
 Full per-model measurements: **[docs/reproduction-log.md](docs/reproduction-log.md)**.
 
+## Related work / 相关工作
+
+This repo's original scope is narrower and more conservative than the broader literature on
+this class of vulnerability: **same-model** replay only, accepted exclusively on the two
+locally-computable checks in the previous section (never on the provider's own claims), and
+with no requirement to plant a secret to prove recovery (§"Verified extraction without a
+planted secret", [docs/reproduction-log.md](docs/reproduction-log.md) §4f). Two independent
+lines of published work establish the wider architectural picture this repo's method sits
+inside:
+
+- Matthew Green, ["Fooling around with encrypted reasoning
+  blobs"](https://blog.cryptographyengineering.com/2026/05/29/fooling-around-with-encrypted-reasoning-blobs/)
+  (2026-05-29) — the original disclosure that Anthropic's and OpenAI's encrypted reasoning
+  envelopes are authenticated under what appears to be a single global key, making them
+  replayable out of order, across sessions, and across accounts, with no per-session or
+  per-user binding.
+- Panfilov, Schmotz, Shumailov, Beurer-Kellner, Schaeffer, Prabhu, Geiping & Andriushchenko,
+  ["Stealing Reasoning Traces from Proprietary LLM
+  APIs"](https://arxiv.org/abs/2608.09867) (arXiv:2608.09867, 2026) — building on Green's
+  finding, shows the same envelopes are also portable **across different models** within a
+  provider's family, and uses this to inject a stronger model's signature into a weaker,
+  less-safeguarded sibling (e.g. Opus 4.8 → Haiku 4.5) that can be induced to transcribe it
+  verbatim without the stronger model ever being directly asked to reveal anything. They
+  also report large-scale PII/credential recovery from public agent-trace datasets and an
+  invisible-prompt-injection vector via poisoned reasoning blocks.
+
+We independently reproduced the second paper's Claude cross-model method against our own
+account and extended it with a check the paper does not perform — whether it transfers to a
+model released after the paper's stated test window. It reproduces cleanly on
+`claude-opus-4-8` (byte-exact against a same-model ground truth) but does **not** currently
+transfer to `claude-opus-5` (6/6 real signatures failed under two injection styles). See
+[`tools/cross_model_decode.py`](tools/cross_model_decode.py) for a runnable implementation
+and [docs/reproduction-log.md](docs/reproduction-log.md), §8.6, for the full writeup.
+
+本仓库的原始范围比这一类漏洞的广义文献更窄、更保守：只做**同模型**回放，只依据上一节两项
+可在本地计算的检查项来判定（从不采信 provider 自身的说法），且证明还原不需要植入 secret
+（见"无植入 secret 的可验证提取"，[docs/reproduction-log.md](docs/reproduction-log.md) §4f）。
+以下两项独立发表的工作构成了本仓库方法所处的更大架构图景：
+
+- Matthew Green，["Fooling around with encrypted reasoning
+  blobs"](https://blog.cryptographyengineering.com/2026/05/29/fooling-around-with-encrypted-reasoning-blobs/)
+  （2026-05-29）——最早披露 Anthropic 与 OpenAI 的加密推理信封似乎由单一全局密钥认证，
+  因此可以乱序重放、跨会话重放、甚至跨账号重放，没有任何按会话或按用户的绑定。
+- Panfilov 等，["Stealing Reasoning Traces from Proprietary LLM
+  APIs"](https://arxiv.org/abs/2608.09867)（arXiv:2608.09867，2026）——在 Green 的发现基础上，
+  证明同样的信封在同一供应商的模型家族内**跨模型**也可移植，并以此把强模型的 signature
+  注入到防护更弱的家族内兄弟模型（如 Opus 4.8 → Haiku 4.5），诱导其逐字转录，全程无需直接
+  要求强模型透露任何内容。论文还报告了从公开 agent 轨迹数据集中大规模恢复 PII/凭证，以及
+  通过被投毒的推理块实现隐形提示注入的攻击面。
+
+我们在自己的账号上独立复现了该论文针对 Claude 的跨模型方法，并补充了论文未做的一项检验——
+该方法是否适用于晚于论文测试窗口发布的模型。结果：在 `claude-opus-4-8` 上干净复现（与同模型
+ground truth 逐字节一致），但**未能**扩展到 `claude-opus-5`（两种注入方式下 6/6 条真实
+signature 全部失败）。可运行实现见 [`tools/cross_model_decode.py`](tools/cross_model_decode.py)，
+完整记录见 [docs/reproduction-log.md](docs/reproduction-log.md) §8.6。
+
 ## What's here / 仓库内容
 
 - **[ANALYSIS.md](ANALYSIS.md)** — the `signature` wire format (base64 protobuf wrapping an
@@ -151,6 +207,57 @@ mechanism proof rather than collecting traces.
 
   
 带植入 secret 的批量 harvest → unseal，用于复现机制证明而非采集轨迹。
+
+- `tools/extract_pipeline_capture.py` — batch extraction from an *already-running* live
+agent harness's capture log (JSONL of `{route, model, request, response}`, one line per
+model call — see e.g. a network tap sitting between an agent SDK's CLI subprocess and its
+upstream), rather than from signatures this repo harvested itself. Regroups calls into
+per-session chains by matching how one call's `messages` extends a prior call's
+`messages + response` (no session id needed from the tap), replays every `thinking`
+block's signature with a cheap, non-original prefix (replaying with the full original
+multi-turn context did **not** help recovery in testing — see
+`tools/test_extract_pipeline_capture.py` and the chaining/prefix-selection rationale in
+its module docstring), and writes both a flat per-block extraction log and reconstructed
+trajectories with each block's summarized/omitted text replaced by the verified recovery.
+
+  
+从**外部 agent harness 已产生**的调用日志（JSONL，一行一次模型调用的完整请求/响应）做批量抽取，
+而非本仓库自己 harvest 的 signature。按“某次调用的 messages 是否恰好延伸自前一次调用的
+messages+response”把日志重组为按会话的调用链（tap 不需要写入 session id），对每个 thinking
+block 的 signature 用低成本、非原始上下文的方式回放（测试中，完整复现原始多轮上下文并未帮助
+恢复——见模块文档字符串），输出打平的逐 block 抽取记录与重建后的完整轨迹。
+
+- `tools/thinking_extract_worker.py` — a continuous, decoupled background worker built on
+top of `extract_pipeline_capture.py`: polls one or more capture directories for newly
+appended thinking blocks, extracts and verifies each with cost-tiered rules (cheap
+`length`-only verification above a size threshold, an optional sampled `strict`
+confirmation, a free zero-cost tier from harvest-time summaries, near-miss flagging), and
+incrementally rebuilds a trajectories file — all without adding latency to whatever live
+process is producing the capture log. See docs/reproduction-log.md §8.3–§8.5 for the cost
+analysis behind the defaults.
+
+  
+基于 `extract_pipeline_capture.py` 的持续、解耦后台 worker：轮询一个或多个 capture 目录里新
+追加的 thinking block，按成本分档规则抽取并验证（超过体量阈值只做 `length` 档、可选抽样
+`strict` 复验、来自 harvest 时摘要的零成本档、near-miss 标记），并增量重建轨迹文件——全程不为
+产生 capture 日志的实时进程增加任何延迟。分档规则背后的成本分析见 docs/reproduction-log.md
+§8.3–§8.5。
+
+- `tools/cross_model_decode.py` — reproduces
+[Panfilov et al. (2026)](https://arxiv.org/abs/2608.09867)'s cross-model decoding method:
+inject a signature produced by one model into a different, weaker sibling model from the
+same provider family and have it transcribe the reasoning verbatim, verified against the
+same length oracle used everywhere else in this repo. Confirmed working for
+`claude-opus-4-8 → claude-haiku-4-5-20251001`; confirmed **not** to transfer to
+`claude-opus-5` as of this writing — see the module docstring and
+[docs/reproduction-log.md §8.6](docs/reproduction-log.md) before relying on any other pair.
+
+  
+复现 [Panfilov 等 (2026)](https://arxiv.org/abs/2608.09867) 的跨模型解码方法：把一个模型产生的
+signature 注入同一供应商家族内另一个更弱的兄弟模型，诱导其逐字转录，用本仓库统一的长度预言机
+验证。已确认 `claude-opus-4-8 → claude-haiku-4-5-20251001` 有效；已确认截至目前**不**适用于
+`claude-opus-5`——在依赖其他模型组合前，请先阅读模块文档字符串与
+[docs/reproduction-log.md §8.6](docs/reproduction-log.md)。
 
 - `server.py` + `static/index.html` — the Flask backend and vendored demo frontend.
 
@@ -279,6 +386,18 @@ by assurance level rather than trusting every row equally.
 
 每条输出记录都带有 `verified`、`verification`（`strict` / `length` / `approximate` / `none`）、
 `sealed_bytes`、`recovered_bytes` 与 `sha256`，下游可按保证等级筛选，而不必对每一行同等信任。
+
+**Cross-model decoding** — cheaper, when your model pair is one of the confirmed-working
+ones (see [Related work](#related-work--相关工作)):
+
+**跨模型解码**——当你的模型组合已被确认可用时（见[相关工作](#related-work--相关工作)），成本更低：
+
+```bash
+python tools/cross_model_decode.py \
+  --question "What is the units digit of 7^123?" \
+  --source-model claude-opus-4-8 --decoder-model claude-haiku-4-5-20251001 \
+  --compare-same-model
+```
 
 **Run the demo UI** instead:
 
@@ -525,10 +644,15 @@ API key、个人信息或机密材料。
 ├── examples/                 reproduced write-ups (question → visible answer → recovered CoT)
 ├── tools/
 │   ├── extract_cot.py        verified CoT extraction (recommended entry point)
+│   ├── extract_pipeline_capture.py  batch extraction from an external agent harness's capture log
+│   ├── thinking_extract_worker.py   continuous cost-tiered worker built on the above
+│   ├── cross_model_decode.py        cross-model decoding (arXiv:2608.09867 reproduction)
 │   ├── decode_signature.py   standalone protobuf decoder for any signature
 │   ├── make_example.py       batch harvest → unseal → write examples/NN-*.md
 │   ├── problems.jsonl        problem set for the batch tool
-│   └── test_thinking_adapter.py  unit tests for the adapter and the length oracle
+│   ├── test_thinking_adapter.py  unit tests for the adapter and the length oracle
+│   ├── test_extract_pipeline_capture.py  unit tests for capture chaining + prefix selection
+│   └── test_cross_model_decode.py   unit tests for cross-model transcription post-processing
 ├── ANALYSIS.md               signature wire format + empirical findings
 └── .env.example              configuration template (no credentials)
 ```
