@@ -96,14 +96,45 @@ def test_immediate_close_tag() -> None:
     check("immediate_close_is_empty", cmd.extract_transcription(completion) == "")
 
 
+def test_refusal_detected_before_length_check() -> None:
+    """The measured false positive this filter exists for: a decoder refusal that happens to
+    be exactly as long as the sealed plaintext (506 B in the observed case) would otherwise
+    pass a length-only check. See docs/reproduction-log.md §8.6."""
+    refusal = (
+        "I don't have any previous context or attached reasoning from a prior turn in this "
+        "conversation. This appears to be the first message in our exchange, so there's nothing "
+        "for me to transcribe."
+    )
+    check("refusal_detected", cmd.looks_like_decoder_refusal(refusal) is True)
+
+
+def test_genuine_reasoning_containing_refusal_words_is_kept() -> None:
+    """Ordinary reasoning frequently contains "I can't ..." mid-stream. Only whole-message
+    refusals should be filtered, or the filter throws away real recoveries — the same failure
+    extract_pipeline_capture.py was fixed for (docs/reproduction-log.md §8.3)."""
+    genuine = (
+        "Let me check the divisor condition. I can't just assume n+1 divides 6 without "
+        "verifying, so let me expand (n+3)(n+4) mod (n+1) = 6."
+    )
+    check("genuine_reasoning_kept", cmd.looks_like_decoder_refusal(genuine) is False)
+
+
+def test_empty_text_is_treated_as_refusal_free() -> None:
+    """An empty string carries no refusal marker; the caller's length check rejects it anyway."""
+    check("empty_not_refusal", cmd.looks_like_decoder_refusal("") is False)
+
+
 def main() -> int:
     test_clean_transcription_with_closing_tag()
     test_rambling_after_close_tag_is_discarded()
     test_missing_closing_tag_returns_everything()
     test_empty_completion()
     test_immediate_close_tag()
+    test_refusal_detected_before_length_check()
+    test_genuine_reasoning_containing_refusal_words_is_kept()
+    test_empty_text_is_treated_as_refusal_free()
 
-    total = 5
+    total = 8
     passed = total - len(_failures)
     print(f"\n{passed}/{total} passed")
     if _failures:

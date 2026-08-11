@@ -147,13 +147,20 @@ inside:
   also report large-scale PII/credential recovery from public agent-trace datasets and an
   invisible-prompt-injection vector via poisoned reasoning blocks.
 
-We independently reproduced the second paper's Claude cross-model method against our own
-account and extended it with a check the paper does not perform — whether it transfers to a
-model released after the paper's stated test window. It reproduces cleanly on
-`claude-opus-4-8` (byte-exact against a same-model ground truth) but does **not** currently
-transfer to `claude-opus-5` (6/6 real signatures failed under two injection styles). See
+We independently reproduced the second paper's Claude method against our own account and
+extended it with two checks the paper does not perform: a full source × decoder matrix, and
+per-sample hit rates over repeated draws. Every Claude model we tested is cross-decodable by
+the cheapest model in the family (Opus 4.8, Opus 4.6, Sonnet 4.6, Sonnet 5 → Haiku 4.5, all
+byte-exact, 75–90% of individual samples). **`claude-opus-5` is the single exception**, and
+it is model-specific rather than generation-specific — same-generation `claude-sonnet-5`
+decodes fine, while Opus 5 signatures were decoded by exactly one model, Opus 5 itself
+(0 genuine recoveries in 40 cross-model attempts across five signatures). We also found that
+a length-only check produces false positives in the cross-model setting: a decoder refusal
+coincidentally matched the sealed length exactly. See
 [`tools/cross_model_decode.py`](tools/cross_model_decode.py) for a runnable implementation
-and [docs/reproduction-log.md](docs/reproduction-log.md), §8.6, for the full writeup.
+with best-of-n sampling, refusal filtering and reconciliation, and
+[docs/reproduction-log.md](docs/reproduction-log.md), §8.6–§8.7, for the full matrix, hit
+rates and costs.
 
 本仓库的原始范围比这一类漏洞的广义文献更窄、更保守：只做**同模型**回放，只依据上一节两项
 可在本地计算的检查项来判定（从不采信 provider 自身的说法），且证明还原不需要植入 secret
@@ -171,11 +178,15 @@ and [docs/reproduction-log.md](docs/reproduction-log.md), §8.6, for the full wr
   要求强模型透露任何内容。论文还报告了从公开 agent 轨迹数据集中大规模恢复 PII/凭证，以及
   通过被投毒的推理块实现隐形提示注入的攻击面。
 
-我们在自己的账号上独立复现了该论文针对 Claude 的跨模型方法，并补充了论文未做的一项检验——
-该方法是否适用于晚于论文测试窗口发布的模型。结果：在 `claude-opus-4-8` 上干净复现（与同模型
-ground truth 逐字节一致），但**未能**扩展到 `claude-opus-5`（两种注入方式下 6/6 条真实
-signature 全部失败）。可运行实现见 [`tools/cross_model_decode.py`](tools/cross_model_decode.py)，
-完整记录见 [docs/reproduction-log.md](docs/reproduction-log.md) §8.6。
+我们在自己的账号上独立复现了该论文针对 Claude 的方法，并补充了论文未做的两项检验：完整的
+「源模型 × 解码器」矩阵，以及重复采样下的单次命中率。受测的每个 Claude 模型都能被家族中最便宜
+的模型跨模型解码（Opus 4.8、Opus 4.6、Sonnet 4.6、Sonnet 5 → Haiku 4.5，均逐字节一致，单次
+采样命中率 75–90%）。**`claude-opus-5` 是唯一例外**，且属于模型级而非代际限制——同代的
+`claude-sonnet-5` 可正常解码，而 Opus 5 的 signature 只有 Opus 5 自己能解（5 条 signature、
+40 次跨模型尝试中无一次真实还原）。我们还发现跨模型场景下仅做长度校验会产生假阳性：一次解码器
+拒绝回复的字节数恰好等于密封长度。可运行实现（含 best-of-n 采样、拒绝过滤与 reconciliation）见
+[`tools/cross_model_decode.py`](tools/cross_model_decode.py)，完整矩阵、命中率与成本见
+[docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7。
 
 ## What's here / 仓库内容
 
@@ -247,17 +258,23 @@ analysis behind the defaults.
 [Panfilov et al. (2026)](https://arxiv.org/abs/2608.09867)'s cross-model decoding method:
 inject a signature produced by one model into a different, weaker sibling model from the
 same provider family and have it transcribe the reasoning verbatim, verified against the
-same length oracle used everywhere else in this repo. Confirmed working for
-`claude-opus-4-8 → claude-haiku-4-5-20251001`; confirmed **not** to transfer to
-`claude-opus-5` as of this writing — see the module docstring and
-[docs/reproduction-log.md §8.6](docs/reproduction-log.md) before relying on any other pair.
+same length oracle used everywhere else in this repo. Adds `--samples N` (best-of-n in
+parallel, ~7x cheaper than same-model replay at n=4), refusal filtering *before* the length
+check (a refusal can coincidentally match the sealed length — measured), and `--reconcile`
+(the paper's Fig. 34 multi-sample merge). Works for Opus 4.8 / Opus 4.6 / Sonnet 4.6 /
+Sonnet 5 → Haiku 4.5; does **not** work for `claude-opus-5`, whose signatures only its own
+model decodes. Read the module docstring and
+[docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7 before relying on any pair
+not listed there.
 
   
 复现 [Panfilov 等 (2026)](https://arxiv.org/abs/2608.09867) 的跨模型解码方法：把一个模型产生的
 signature 注入同一供应商家族内另一个更弱的兄弟模型，诱导其逐字转录，用本仓库统一的长度预言机
-验证。已确认 `claude-opus-4-8 → claude-haiku-4-5-20251001` 有效；已确认截至目前**不**适用于
-`claude-opus-5`——在依赖其他模型组合前，请先阅读模块文档字符串与
-[docs/reproduction-log.md §8.6](docs/reproduction-log.md)。
+验证。新增 `--samples N`（并行 best-of-n，n=4 时比同模型回放便宜约 7 倍）、在长度校验**之前**
+进行拒绝过滤（实测拒绝回复可能恰好命中密封长度），以及 `--reconcile`（论文 Fig. 34 的多样本
+合并）。适用于 Opus 4.8 / Opus 4.6 / Sonnet 4.6 / Sonnet 5 → Haiku 4.5；**不**适用于
+`claude-opus-5`，其 signature 只有本模型能解。在依赖未列出的模型组合前，请先阅读模块文档字符串
+与 [docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7。
 
 - `server.py` + `static/index.html` — the Flask backend and vendored demo frontend.
 

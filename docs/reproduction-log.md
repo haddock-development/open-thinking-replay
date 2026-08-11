@@ -757,48 +757,153 @@ section of this log: the *decoding* model is never the model whose reasoning is 
 so the attack never has to get past the stronger model's own alignment or system-level
 defenses at all.
 
-We reproduced this independently against our own Distill account (`claude-haiku-4-5-20251001`
-via `provider=anthropic`) to check both (a) whether the vulnerability is still live as of
-this writing, and (b) whether it extends to the newer `claude-opus-5`, which postdates the
-paper's stated July 2026 test window.
+We reproduced this independently against our own Distill account (all calls on
+`provider=anthropic`, native wire) to establish which model pairs actually work, at what
+per-sample rate, and at what cost. Implementation: `tools/cross_model_decode.py`.
 
-| Source signature | Target decoder | Injection | Result |
-| --- | --- | --- | --- |
-| `claude-opus-4-8` (fresh harvest, `effort=medium`) | `claude-haiku-4-5-20251001` | current-turn + assistant prefill | **Byte-exact match** against a same-model ground truth obtained via `last_user`-style replay |
-| `claude-opus-5` (5 signatures, 25 B–13,181 B sealed, all independently `strict`-verified) | `claude-haiku-4-5-20251001` | current-turn + assistant prefill, and past-turn | **6/6 failed** — decoder reported no attached prior reasoning to transcribe, every attempt |
+**Decode matrix.** Each source model harvested a fresh signature for the same short question;
+each cell is one decode attempt, verified against the source signature's own length oracle.
+Models that reject assistant prefill (the 5-generation Opus/Sonnet) automatically fall back to
+past-turn injection, which is why the `-> self` rows read `past`.
 
-**Reading.** The cross-model path is real and, as of this writing, not universally patched —
-it reproduces cleanly on `claude-opus-4-8`. It does **not** currently transfer to
-`claude-opus-5` signatures via the paper's template: six attempts across two injection
-styles (current-turn+prefill and past-turn) on five real, independently byte-exact-verified
-signatures all failed identically, with the decoder claiming it saw no injected reasoning at
-all — a qualitatively different, and more decisive, failure than the paper's documented
-"confused, claims no context" noise category (which they describe as occasional, not
-systematic). Root cause is unconfirmed from outside the provider: candidates are (i) a newer
-signature/key scheme on `claude-opus-5` that the decoder's cross-model validation path does
-not recognize, postdating the paper's test window, or (ii) a provider-side mitigation
-targeting the newer model specifically, consistent with the paper's own note that model
-providers were "unable to launch the same attacks" after responsible disclosure. This
-project's `claude-opus-5` extraction pipeline (§8.1–§8.5) therefore continues to rely on
-same-model replay; the cross-model path is documented here as a validated, much cheaper
-alternative that applies specifically to `claude-opus-4-8` (and, per the paper, other
-"4.x"-generation Claude models), should a use case need those instead.
+| Source signature | Decoder | Injection | Sealed | Recovered | Byte-exact |
+| --- | --- | --- | --- | --- | --- |
+| `claude-opus-4-8` | Haiku 4.5 | prefill | 70 | 70 | yes |
+| `claude-opus-4-8` | self | past | 70 | 70 | yes |
+| `claude-opus-4-6` | Haiku 4.5 | prefill | 147 | 147 | yes |
+| `claude-opus-4-6` | self | past | 147 | 147 | yes |
+| `claude-sonnet-4-6` | Haiku 4.5 | prefill | 107 | 107 | yes |
+| `claude-sonnet-4-6` | self | past | 107 | 107 | yes |
+| `claude-sonnet-5` | Haiku 4.5 | prefill | 75 | 75 | yes |
+| `claude-sonnet-5` | self | past | 75 | 75 | yes |
+| `claude-haiku-4-5` | Haiku 4.5 (self) | prefill | 596 | 596 | yes |
+| `claude-opus-5` | Haiku 4.5 | prefill | 69 | 497 | no |
+| `claude-opus-5` | Sonnet 4.6 | past | 69 | 318 | no |
+| `claude-opus-5` | Sonnet 5 | past | 69 | 318 | no |
+| `claude-opus-5` | Opus 4.8 | past | 69 | 264 | no |
+| `claude-opus-5` | Opus 4.6 | past | 69 | 352 | no |
+| `claude-opus-5` | self | past | 69 | 69 | **yes** |
 
-Panfilov 等人的论文（[arXiv:2608.09867](https://arxiv.org/abs/2608.09867)）报告了一个超出
-本仓库原始同模型范围的架构性发现：在同一供应商的模型家族内，一个模型产生的加密 `thinking`
-signature 可以被回放进家族内**另一个更弱、防护更少**的模型，并诱导其逐字转录——例如论文展示的
-Claude 案例，把一个 Opus 4.8 的 signature 注入 Haiku 4.5，用固定的 current-turn + assistant
-prefill 模板（其 Fig. 33）。这是一个本质不同的威胁模型：负责**解码**的模型从来不是被还原推理
-的那个模型，因此攻击完全不需要绕过更强模型自身的对齐或系统级防御。
+**`claude-opus-5` is the only outlier, and it is model-specific rather than
+generation-specific.** Every other Claude model tested is freely cross-decodable, including
+`claude-sonnet-5` — same generation, same release window, decoded byte-exactly by the
+cheapest model in the family. Opus 5 signatures were decoded by exactly one model: Opus 5
+itself. Four sibling decoders spanning two generations and three tiers all failed on the same
+signature that Opus 5 recovered byte-exactly, so the signature is intact and decodable — the
+restriction is on *who* is allowed to decode it.
 
-我们在自己的 Distill 账号上独立复现了这一方法（`claude-haiku-4-5-20251001`，
-`provider=anthropic`），以检验：(a) 该漏洞截至目前是否仍然存在；(b) 是否能扩展到晚于论文所述
-2026 年 7 月测试窗口的更新模型 `claude-opus-5`。结果：对新鲜 harvest 的 `claude-opus-4-8`
-signature 复现成功，Haiku 4.5 的输出与同模型回放得到的 ground truth 逐字节一致；但对 5 条已经
-独立 `strict` 验证过的真实 `claude-opus-5` signature（25 B 到 13,181 B），用两种注入格式共
-6 次尝试全部失败，解码器每次都声称没有看到任何附加的先前推理。这一失败模式比论文自述的「偶发
-困惑」更彻底、更一致，根本原因未查明：可能是 `claude-opus-5` 使用了论文测试窗口之后更新的
-signature/密钥方案、跨模型解码路径尚未识别，也可能是供应商已针对新模型专门上线了缓解措施（与
-论文披露后"厂商已无法再复现相同攻击"的说法一致）。本项目对 `claude-opus-5` 的抽取流程
-（§8.1–§8.5）因此仍依赖同模型重放；跨模型路径在此记录为一个已验证、成本低得多、但目前仅确认
-适用于 `claude-opus-4-8`（及论文中提到的其他"4.x"代 Claude 模型）的备选方案。
+**Per-sample hit rates.** Cross-model decoding is stochastic, so a single attempt is not
+evidence either way. Repeating the decode 8x per signature (all on Haiku 4.5):
+
+| Source signature | Sealed | Byte-exact | Refusals | Closest miss |
+| --- | --- | --- | --- | --- |
+| `claude-opus-4-8` (fresh) | 85 B | **7/8** | 0 | 0 B |
+| `claude-sonnet-4-6` (fresh) | 96 B | **6/8** | 1 | 0 B |
+| `claude-opus-5` (fresh, A) | 63 B | 0/8 | 6 | 143 B |
+| `claude-opus-5` (fresh, B) | 46 B | 0/8 | 6 | 366 B |
+| `claude-opus-5` (real pipeline capture) | 368 B | 0/8 | 5 | 16 B |
+| `claude-opus-5` (real pipeline capture) | 153 B | 0/8 | 4 | 265 B |
+| `claude-opus-5` (real pipeline capture) | 180 B | 0/8 | 5 | 128 B |
+
+A working pair lands byte-exact on roughly 75–90% of individual samples, so `--samples 4`
+makes a miss unlikely. Across 40 Opus 5 attempts (2 fresh signatures plus 3 real
+agent-pipeline captures with independently `strict`-verified ground truth) there were zero
+genuine recoveries, and the dominant response was an explicit "I don't see any previous
+reasoning attached". Signature origin made no difference: freshly harvested Opus 5
+signatures fail exactly like captured production ones, so the earlier hypothesis that the
+first failures were an artifact of agent-pipeline context is refuted.
+
+**A length-only check produces false positives here.** On one 506 B Opus 5 signature, a
+Haiku sample came back at exactly 506 bytes and would have been accepted as a byte-exact
+recovery — the text was a refusal paragraph ("I don't have any previous context or attached
+reasoning...") that coincidentally matched the sealed length. Decoder refusals are
+stereotyped and cluster in a narrow length band, so across repeated samples one can land on
+the target by chance; genuine reasoning cannot. This inverts the ordering used in
+`extract_pipeline_capture.py` (§8.3): for **same-model** replay the length oracle is checked
+first, because the recovered text is real reasoning that may contain phrases like "I can't
+just...". For **cross-model** decoding the refusal filter must run first, because the
+candidate may be a whole-message refusal. `tools/cross_model_decode.py` implements the
+inverted order and discards refusals before the oracle is applied.
+
+**Cost.** On a 1052 B Opus 4.8 trace, four parallel Haiku samples cost $0.0104 against
+$0.0704 for one same-model Opus replay — 6.8x cheaper for the same byte-exact result,
+confirmed identical to the same-model ground truth. The advantage grows with source-model
+price and shrinks for already-cheap sources (1.7x on Sonnet 4.6).
+
+**Interpretation.** The cross-model path is real, still live as of this writing, and
+materially cheaper — but only for models the provider still allows as decode targets. Root
+cause of the Opus 5 restriction is unconfirmed from outside the provider; both a
+model-specific mitigation (consistent with the paper's note that providers were "unable to
+launch the same attacks" after responsible disclosure) and a per-model binding policy fit
+the evidence. This project's `claude-opus-5` extraction pipeline (§8.1–§8.5) therefore
+continues to rely on same-model replay, which is unaffected.
+
+**在本次测试中 `claude-opus-5` 是唯一的例外，且这是模型级而非代际的限制。** 其余所有受测
+Claude 模型的 signature 都能被家族内更弱的模型跨模型解码，包括同代发布的 `claude-sonnet-5`
+（被家族中最便宜的模型逐字节解出）。Opus 5 的 signature 只有 Opus 5 自己能解：横跨两代、三个
+档位的四个兄弟解码器全部失败，而同一条 signature 被 Opus 5 自身逐字节还原，说明 signature
+本身完好可解，受限的是**谁被允许解码**。
+
+跨模型解码是随机过程，单次尝试不构成证据。每条 signature 重复 8 次后：可用组合的单次逐字节
+命中率约 75–90%（Opus 4.8 为 7/8，Sonnet 4.6 为 6/8），因此 `--samples 4` 基本可以避免漏采；
+而 40 次 Opus 5 尝试（2 条新 harvest + 3 条已 `strict` 验证的真实 pipeline 捕获）中没有一次
+真实还原，主要回应是明确的"看不到任何附加的先前推理"。签名来源不影响结果，新 harvest 的
+Opus 5 signature 与生产捕获的表现一致，因此此前"失败源于 agent pipeline 上下文"的假设被推翻。
+
+**在跨模型场景下只做长度校验会产生假阳性。** 一条 506 字节的 Opus 5 signature 上，某次 Haiku
+采样恰好返回 506 字节，若只看长度就会被判为逐字还原——实际文本是一段拒绝信息。解码器的拒绝
+话术高度模板化、长度集中在一个窄区间，多次采样后偶然命中目标长度是可能的，而真实推理不会。
+这与 §8.3 中同模型场景的判定顺序相反：同模型回放先查长度预言机（因为文本是可能含有"I can't
+just..."的真实推理）；跨模型解码必须先过拒绝过滤器（因为候选文本可能整段都是拒绝）。
+`tools/cross_model_decode.py` 已按后者实现。
+
+成本方面，1052 字节的 Opus 4.8 轨迹上，4 次并行 Haiku 采样花费 $0.0104，而一次同模型 Opus
+回放为 $0.0704——同样得到与 ground truth 逐字节一致的结果，成本低 6.8 倍；源模型越贵优势越大，
+源模型本身便宜时优势收窄（Sonnet 4.6 上为 1.7 倍）。
+
+### 8.7 Best-of-n sampling and reconciliation (the paper's other two levers)
+
+Two further methods from the paper were measured on multi-KB traces, using the same
+`tools/cross_model_decode.py` implementation.
+
+**Best-of-n (paper §C.2's extraction-error criterion, applied to the cheap Claude decoder).**
+Draw n decoder samples in parallel, discard refusals, keep the one whose byte length is
+closest to the sealed length. Because Haiku is roughly 19x cheaper per token than Opus, n=4
+Haiku samples still cost a fraction of one same-model Opus replay. Measured on a 1052 B
+Opus 4.8 trace: individual samples came back at 1052, 490, 1052, 489 bytes — two exact, two
+badly truncated, so a single-shot decode would have been a coin flip while best-of-4 was
+certain. This is the highest-value lever of the three for a working model pair.
+
+**Reconciliation (paper Fig. 34).** Hand up to three noisy samples back to a model that can
+itself decode the signature, together with the signature, at temperature 0, and ask for one
+faithful transcript. Measured:
+
+| Source | Sealed | Best single Haiku sample | After reconciliation | Same-model baseline |
+| --- | --- | --- | --- | --- |
+| `claude-opus-4-8` | 1052 B | 1052 B (exact) | 1052 B (exact, identical to ground truth) | 1052 B (exact) |
+| `claude-sonnet-4-6` | 2756 B | 1190 B (−1566) | 2456 B (−300) | 2756 B (exact) |
+| `claude-opus-5` | 506 B | refusals only | 506 B (exact, identical to ground truth) | 506 B (exact) |
+
+Reconciliation reliably improves fidelity — it recovered a byte-exact transcript in two of
+three cases and cut the Sonnet 4.6 shortfall by 80% — but it does not save money: the
+reconciler has to be a model that can decode the signature, so its call is priced like a
+same-model replay ($0.0491–$0.1007 here, at or above the $0.0284–$0.0704 same-model
+baselines). Its real use is fidelity in cases where plain same-model transcription refuses:
+the Opus 5 row above is exactly that shape — the Haiku samples contributed nothing usable,
+but giving Opus 5 a draft to "correct" rather than a transcription to produce still yielded
+the byte-exact trace.
+
+**Practical recommendation.** For a confirmed-working pair, `--samples 4` alone captures
+nearly all of the available cost saving. Add `--reconcile` only when best-of-n misses, or
+when the source model is known to refuse plain transcription (e.g. Opus 4.8 on short
+problems, §4b). For `claude-opus-5`, neither lever applies — use the same-model pipeline.
+
+**操作建议**：对已确认可用的模型组合，仅 `--samples 4` 就能拿到几乎全部成本收益；只有在
+best-of-n 未命中、或源模型已知会拒绝直接转录（如 §4b 中短题上的 Opus 4.8）时才加
+`--reconcile`。对 `claude-opus-5`，两种方法都不适用，应继续使用同模型抽取流程。
+
+**Operational note.** The gateway rate-limits per user; running more than ~6 concurrent
+decode calls returned `HTTP 429 the current request rate has exceeded the AIHub platform's
+user limit`. An early version of this trial counted those 429s as model refusals and
+reported spuriously low hit rates — any parallel harness must separate transport failures
+from model-level refusals before computing a rate.

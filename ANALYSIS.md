@@ -154,11 +154,17 @@ Proprietary LLM APIs"](https://arxiv.org/abs/2608.09867) (arXiv:2608.09867, 2026
 the same absence of model-binding enforcement at replay time as a general property across
 Claude, GPT, and Gemini, and turn it into a scalable extraction method by deliberately
 targeting the *weakest, least-safeguarded* sibling model as a decoder rather than a
-same-family model chosen for capability. We reproduced their Claude method
-(`tools/cross_model_decode.py`): confirmed on `claude-opus-4-8 → claude-haiku-4-5-20251001`,
-not confirmed on `claude-opus-5` (a model that postdates their stated test window) — see
-README ["Related work"](README.md#related-work--相关工作) and
-`docs/reproduction-log.md` §8.6 for the full comparison.
+same-family model chosen for capability.
+
+We reproduced their Claude method over a full source × decoder matrix
+(`tools/cross_model_decode.py`; results in `docs/reproduction-log.md` §8.6). The §6 result
+above — that the requesting model is not checked against header `#6` — still holds for every
+Claude model measured **except `claude-opus-5`**: Opus 4.8, Opus 4.6, Sonnet 4.6 and
+Sonnet 5 signatures are all decoded byte-exactly by Haiku 4.5, while an Opus 5 signature was
+decoded only by Opus 5 itself, with four sibling decoders across two generations failing on
+the very signature Opus 5 recovered byte-exactly. So model-binding enforcement is not a
+property of the wire format or of the gateway as a whole, but a per-model policy that can
+differ between two models of the same generation.
 
 ## 7. Verbatim recovery adjudication (H0 vs H1)
 
