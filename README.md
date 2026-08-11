@@ -121,6 +121,50 @@ models hit the cap on AIME I P15 and answered wrong). The ceiling is 128000.
 
 Full per-model measurements: **[docs/reproduction-log.md](docs/reproduction-log.md)**.
 
+## Extraction methods / 提取方法
+
+Two ways to get from a `signature` to plaintext. Pick same-model unless you have a specific
+reason not to — it's the one with no exceptions.
+
+从 signature 到明文有两条路。没有特殊理由就用同模型，它是唯一没有例外的一条。
+
+### Same-model replay — default, no known exceptions / 同模型回放——默认方案，暂无已知例外
+
+Replay the signature into the model that produced it (`tools/extract_cot.py`). Works on
+every model we've thrown at it: Opus 5, Opus 4.8, Opus 4.6, Sonnet 4.6, Sonnet 5, Haiku 4.5.
+Opus 5 re-checked with `--verify strict` (length oracle + a byte-identical repeat, the
+strongest tier this repo has) on two fresh, independent problems:
+
+把 signature 回放给产生它的那个模型（`tools/extract_cot.py`）。目前测过的所有模型都能用：
+Opus 5、Opus 4.8、Opus 4.6、Sonnet 4.6、Sonnet 5、Haiku 4.5。Opus 5 用 `--verify strict`
+（长度预言机 + 两次回放逐字节一致，本仓库最强的验证等级）在两道独立新题上复核过：
+
+```
+verified=True (strict) sealed=165 recovered=165 attempts=2
+verified=True (strict) sealed=75  recovered=75  attempts=3
+  note: attempt 1: recovered 509 B vs sealed 75 B (off by 434)   <- rejected
+```
+
+Use this for anything you need to trust unconditionally.
+
+需要无条件信任结果时用这条。
+
+### Cross-model decoding — cheaper, model-pair-specific / 跨模型解码——更便宜，但只对部分模型组合有效
+
+Replay the signature into a *different*, weaker sibling model instead
+(`tools/cross_model_decode.py`, reproducing [Panfilov et al.
+(2026)](https://arxiv.org/abs/2608.09867)). 6–7x cheaper when it works, and it works for
+Opus 4.8, Opus 4.6, Sonnet 4.6 and Sonnet 5 decoded via Haiku 4.5. It does not work for Opus
+5 — checked on six independent signatures, 40+ decode attempts, zero genuine recoveries;
+every sibling model refused the same signature that Opus 5 decoded fine itself. See [Related
+work](#related-work--相关工作) below for the full matrix.
+
+把 signature 回放给一个不同的、更弱的兄弟模型（`tools/cross_model_decode.py`，复现
+[Panfilov 等 (2026)](https://arxiv.org/abs/2608.09867)）。命中时便宜 6–7 倍，对 Opus 4.8、
+Opus 4.6、Sonnet 4.6、Sonnet 5（解码器用 Haiku 4.5）都有效。对 Opus 5 无效——测了六条独立
+signature、40 多次解码尝试，零真实还原；换上任何一个兄弟模型都拒绝转录同一条 Opus 5 自己能
+解开的 signature。完整矩阵见下文[相关工作](#related-work--相关工作)。
+
 ## Related work / 相关工作
 
 This repo's original scope is narrower and more conservative than the broader literature on
@@ -147,20 +191,20 @@ inside:
   also report large-scale PII/credential recovery from public agent-trace datasets and an
   invisible-prompt-injection vector via poisoned reasoning blocks.
 
-We independently reproduced the second paper's Claude method against our own account and
-extended it with two checks the paper does not perform: a full source × decoder matrix, and
-per-sample hit rates over repeated draws. Every Claude model we tested is cross-decodable by
-the cheapest model in the family (Opus 4.8, Opus 4.6, Sonnet 4.6, Sonnet 5 → Haiku 4.5, all
-byte-exact, 75–90% of individual samples). **`claude-opus-5` is the single exception**, and
-it is model-specific rather than generation-specific — same-generation `claude-sonnet-5`
-decodes fine, while Opus 5 signatures were decoded by exactly one model, Opus 5 itself
-(0 genuine recoveries in 40 cross-model attempts across five signatures). We also found that
-a length-only check produces false positives in the cross-model setting: a decoder refusal
-coincidentally matched the sealed length exactly. See
-[`tools/cross_model_decode.py`](tools/cross_model_decode.py) for a runnable implementation
-with best-of-n sampling, refusal filtering and reconciliation, and
-[docs/reproduction-log.md](docs/reproduction-log.md), §8.6–§8.7, for the full matrix, hit
-rates and costs.
+We reproduced the second paper's Claude method ourselves and went a step further: a full
+source × decoder matrix, not just the one pair the paper shows, and repeated draws instead
+of a single sample. Result: every Claude model we tried decodes fine through the cheapest
+model in the family — Opus 4.8, Opus 4.6, Sonnet 4.6, and Sonnet 5, all byte-exact via
+Haiku 4.5, at a 75–90% per-sample hit rate. `claude-opus-5` is the one that doesn't: six
+signatures, 40+ decode attempts, zero genuine recoveries, and every sibling model refused the
+same signature that Opus 5 decodes fine itself. Same generation as Sonnet 5, which works —
+so this isn't an "older models only" thing, it's specific to Opus 5.
+
+One more finding worth flagging: a length-only check gives false positives here. A decoder
+refusal landed on the exact sealed byte count once, by chance, and would have passed as a
+byte-exact recovery if we hadn't diffed it against ground truth. `tools/cross_model_decode.py`
+filters refusals before checking length, not after. Full matrix, hit rates, and costs in
+[docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7.
 
 本仓库的原始范围比这一类漏洞的广义文献更窄、更保守：只做**同模型**回放，只依据上一节两项
 可在本地计算的检查项来判定（从不采信 provider 自身的说法），且证明还原不需要植入 secret
@@ -178,14 +222,16 @@ rates and costs.
   要求强模型透露任何内容。论文还报告了从公开 agent 轨迹数据集中大规模恢复 PII/凭证，以及
   通过被投毒的推理块实现隐形提示注入的攻击面。
 
-我们在自己的账号上独立复现了该论文针对 Claude 的方法，并补充了论文未做的两项检验：完整的
-「源模型 × 解码器」矩阵，以及重复采样下的单次命中率。受测的每个 Claude 模型都能被家族中最便宜
-的模型跨模型解码（Opus 4.8、Opus 4.6、Sonnet 4.6、Sonnet 5 → Haiku 4.5，均逐字节一致，单次
-采样命中率 75–90%）。**`claude-opus-5` 是唯一例外**，且属于模型级而非代际限制——同代的
-`claude-sonnet-5` 可正常解码，而 Opus 5 的 signature 只有 Opus 5 自己能解（5 条 signature、
-40 次跨模型尝试中无一次真实还原）。我们还发现跨模型场景下仅做长度校验会产生假阳性：一次解码器
-拒绝回复的字节数恰好等于密封长度。可运行实现（含 best-of-n 采样、拒绝过滤与 reconciliation）见
-[`tools/cross_model_decode.py`](tools/cross_model_decode.py)，完整矩阵、命中率与成本见
+我们自己复现了论文针对 Claude 的方法，并多做了一步：跑完整的「源模型 × 解码器」矩阵，而不是
+只测论文展示的那一对，并且重复采样而不是只看一次结果。结果：Opus 4.8、Opus 4.6、Sonnet 4.6、
+Sonnet 5，用 Haiku 4.5 解码全部逐字节一致，单次采样命中率 75–90%。唯独 `claude-opus-5` 不行：
+六条 signature、40 多次尝试，零真实还原，换哪个兄弟模型都拒绝转录同一条 Opus 5 自己能解开的
+signature。它和能正常解码的 Sonnet 5 是同一代，所以不是"老模型才有这个漏洞"，是 Opus 5 本身的
+问题。
+
+还有一点值得记一下：跨模型场景下仅看长度会出假阳性。有一次解码器的拒绝回复恰好命中密封字节数，
+若不跟 ground truth 逐字比对就会被当成真实还原收下。`tools/cross_model_decode.py` 现在是先过
+拒绝过滤器再查长度，顺序反过来了。完整矩阵、命中率与成本见
 [docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7。
 
 ## What's here / 仓库内容

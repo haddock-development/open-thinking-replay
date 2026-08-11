@@ -830,13 +830,25 @@ $0.0704 for one same-model Opus replay — 6.8x cheaper for the same byte-exact 
 confirmed identical to the same-model ground truth. The advantage grows with source-model
 price and shrinks for already-cheap sources (1.7x on Sonnet 4.6).
 
-**Interpretation.** The cross-model path is real, still live as of this writing, and
-materially cheaper — but only for models the provider still allows as decode targets. Root
-cause of the Opus 5 restriction is unconfirmed from outside the provider; both a
-model-specific mitigation (consistent with the paper's note that providers were "unable to
-launch the same attacks" after responsible disclosure) and a per-model binding policy fit
-the evidence. This project's `claude-opus-5` extraction pipeline (§8.1–§8.5) therefore
-continues to rely on same-model replay, which is unaffected.
+So the cross-model path is real, still live, and cheaper — for the models the provider
+still lets you use it on. Why Opus 5 specifically is blocked, we don't know from outside the
+provider; could be a model-specific mitigation (the paper mentions providers being unable to
+reproduce their attacks after disclosure), could be a per-model binding policy that predates
+any of this. Either way, `claude-opus-5` extraction (§8.1–§8.5) stays on same-model replay,
+which this doesn't touch.
+
+**Update, same evening.** Re-ran both directions independently to sanity-check the
+matrix above before writing it up. Same-model Opus 5 → Opus 5, `--verify strict` (length
+oracle + a byte-identical repeat), two fresh problems: `sealed=165 recovered=165` and
+`sealed=75 recovered=75` (the second run's first attempt landed 434 bytes off and was
+correctly rejected before the second attempt matched). Cross-model Opus 5 → Haiku 4.5 on a
+sixth signature, `--samples 4`: 4/4 refusals, same failure as everywhere else. Both hold.
+
+**更新，同一天晚些时候。** 写这段之前又各自独立跑了一遍，防止之前的矩阵是偶然。
+同模型 Opus 5 → Opus 5，`--verify strict`（长度预言机 + 两次回放逐字节一致），两道新题：
+`sealed=165 recovered=165`、`sealed=75 recovered=75`（第二次的第一次尝试偏差 434 字节，
+被正确拒绝，第二次才命中）。跨模型 Opus 5 → Haiku 4.5 换第六条 signature 再测，
+`--samples 4`：4/4 全部拒绝，跟前面的结果一样。两边都站得住。
 
 **在本次测试中 `claude-opus-5` 是唯一的例外，且这是模型级而非代际的限制。** 其余所有受测
 Claude 模型的 signature 都能被家族内更弱的模型跨模型解码，包括同代发布的 `claude-sonnet-5`
