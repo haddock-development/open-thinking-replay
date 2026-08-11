@@ -337,7 +337,7 @@ python tools/decode_signature.py @logs/signatures/<session>_turn0_<stamp>.txt
 This repo also speaks the **Distill** (`model-eval`) gateway. Full route / model /
 availability details live in **[docs/distill-gateway.md](docs/distill-gateway.md)**.
 
-本仓库也支持腾讯 **Distill**（`model-eval`）网关。完整的路由、模型与可用性说明见
+本仓库也支持 **Distill**（`model-eval`）网关。完整的路由、模型与可用性说明见
 **[docs/distill-gateway.md](docs/distill-gateway.md)**。
 
 ```bash
