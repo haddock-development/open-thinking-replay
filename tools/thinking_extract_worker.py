@@ -66,12 +66,16 @@ from tools.extract_pipeline_capture import (  # noqa: E402
 
 # Replay calls are fully independent of each other (unlike harvest, which is strictly
 # sequential per conversation) and of the harvest process, so concurrency here is a pure
-# throughput/rate-limit tradeoff. Raised from 6 -> 8: on the 2026-08-10 run, single-block
-# replay latency scaled with sealed size (multi-second for the 60 KB blocks), so with the
-# 51 large blocks in a typical batch, 6 concurrent workers left most of the pool idle once
-# the small blocks drained; the Distill account has not shown rate-limit pressure under 8
-# concurrent replay calls in testing so far, but drop back to 6 if 429s appear.
-DEFAULT_CONCURRENCY = 8
+# throughput/rate-limit tradeoff. Was raised 6 -> 8 on the 2026-08-10 run's latency profile
+# (see below); correction from a later real run: at 8, a 106-block backlog batch hit the
+# gateway's documented per-account cap ("current request rate has exceeded the AIHub
+# platform's user limit (limit: 20 requests/minute)") almost immediately, and 55/106 blocks
+# failed on every attempt as a result — this is a hard account-level ceiling, not a
+# transient 429 that backs off and clears, so concurrency has to stay under it regardless
+# of latency headroom. Dropped to 3, plus RequestRateLimiter below enforces the 20/minute
+# ceiling directly rather than hoping concurrency alone keeps issuance under it.
+DEFAULT_CONCURRENCY = 3
+DEFAULT_MAX_REQUESTS_PER_MINUTE = 15  # stay under the observed 20/min account cap with margin
 DEFAULT_POLL_INTERVAL = 5.0
 DEFAULT_LARGE_THRESHOLD_BYTES = 4000
 # Re-tuned 2->3->2 after actually costing out the completed 2026-08-10 batch run
@@ -248,6 +252,8 @@ def run_worker(args: argparse.Namespace) -> int:
             do_strict_sample=do_sample,
         )
 
+    in_flight_hashes: set[str] = set()  # queued this run, not yet committed to ckpt — see above
+
     try:
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             while True:
@@ -273,9 +279,20 @@ def run_worker(args: argparse.Namespace) -> int:
                             for block_index in thinking_block_indices(record):
                                 signature = record["response"]["content"][block_index].get("signature")
                                 h = sig_hash(signature)
-                                if h in ckpt.seen_signature_hashes:
+                                # Only dedupe against hashes already committed to disk, plus ones
+                                # queued earlier in THIS run (in_flight_hashes below) — NOT marked
+                                # into ckpt.seen_signature_hashes yet. That commit happens in
+                                # record_result(), conditioned on the outcome, specifically so a
+                                # total infra failure (e.g. hitting the gateway's requests/minute
+                                # limit, cost_usd == 0, no real attempt ever completed) is retried
+                                # on a later poll instead of being silently written off forever.
+                                # Found the hard way: 55/106 blocks in one real run — including
+                                # several large, high-value ones — got rate-limited on every
+                                # attempt and would have been unrecoverable under the old
+                                # "mark seen at discovery" behavior.
+                                if h in ckpt.seen_signature_hashes or h in in_flight_hashes:
                                     continue
-                                ckpt.seen_signature_hashes.add(h)
+                                in_flight_hashes.add(h)
                                 new_jobs.append((record, block_index, signature))
 
                 if new_jobs:
@@ -283,6 +300,17 @@ def run_worker(args: argparse.Namespace) -> int:
 
                     def record_result(ext: BlockExtraction, signature: str) -> None:
                         nonlocal completed_since_rebuild
+                        # A total infra failure — no attempt ever got a response, so cost_usd is
+                        # still 0 and verification never moved off "none" — is NOT committed to
+                        # the persistent seen-set. It stays only in this run's in_flight_hashes,
+                        # so a fresh process (or the same one, next poll, once the file offset
+                        # already covers it) will pick it up and retry rather than silently
+                        # losing it. Any real attempt (even a paid one that ended up unverified,
+                        # or the free-summary path) IS committed — retrying those wouldn't
+                        # obviously help and would just spend money again.
+                        retryable_failure = ext.verification == "none" and ext.cost_usd == 0.0
+                        if not retryable_failure:
+                            ckpt.seen_signature_hashes.add(sig_hash(signature))
                         extractions_by_sig[signature] = ext
                         record_dict = asdict(ext)
                         record_dict["signature"] = signature
@@ -295,7 +323,7 @@ def run_worker(args: argparse.Namespace) -> int:
                         print(
                             f"[worker]   verified={ext.verified} ({ext.verification}) sealed={ext.sealed_bytes} "
                             f"recovered={ext.recovered_bytes} large={ext.is_large} near_miss={ext.near_miss} "
-                            f"${ext.cost_usd:.4f}",
+                            f"${ext.cost_usd:.4f}" + ("  [retryable failure — not committed]" if retryable_failure else ""),
                             file=sys.stderr,
                         )
 

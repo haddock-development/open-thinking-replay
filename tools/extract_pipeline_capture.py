@@ -52,7 +52,9 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -62,6 +64,45 @@ sys.path.insert(0, str(ROOT))
 
 import server  # noqa: E402
 from tools.extract_cot import VERBATIM_ELICITOR, sealed_length, UpstreamError, RETRY_STATUS  # noqa: E402
+
+
+class RequestRateLimiter:
+    """Sliding-window limiter shared by every call this module makes, so batch concurrency
+    can be sized for throughput while this independently keeps issuance under a per-account
+    ceiling.
+
+    Why this exists: on a real batch run, a Distill account returned "the current request
+    rate has exceeded the AIHub platform's user limit (limit: 20 requests/minute)" — a hard
+    account-level cap, not a transient fault. It does not carry a numeric HTTP status this
+    module's retry-with-backoff recognizes (see `RETRY_STATUS`), so it was NOT retried; every
+    attempt for the affected blocks failed immediately and the batch lost 55 of 106 blocks in
+    one run, including several of the largest (highest-value) ones. Concurrency alone doesn't
+    reliably stay under a requests/minute ceiling — a handful of threads each doing a few
+    quick sequential attempts can still burst well past it. Override the ceiling with the
+    `EXTRACT_MAX_REQUESTS_PER_MINUTE` env var if your account's quota differs.
+    """
+
+    def __init__(self, max_per_minute: int) -> None:
+        self.max_per_minute = max_per_minute
+        self._lock = threading.Lock()
+        self._timestamps: deque[float] = deque()
+
+    def wait(self) -> None:
+        if self.max_per_minute <= 0:
+            return
+        while True:
+            with self._lock:
+                now = time.time()
+                while self._timestamps and now - self._timestamps[0] >= 60.0:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self.max_per_minute:
+                    self._timestamps.append(now)
+                    return
+                sleep_for = 60.0 - (now - self._timestamps[0]) + 0.05
+            time.sleep(max(sleep_for, 0.05))
+
+
+_RATE_LIMITER = RequestRateLimiter(int(os.environ.get("EXTRACT_MAX_REQUESTS_PER_MINUTE", "15")))
 
 # A cheap, content-free retry prefix. See docs/reproduction-log.md §8.1: this was the ONLY
 # prefix that recovered cleanly in that trial, while both the exact original context and
@@ -306,12 +347,19 @@ def _route_context(route: str, model: str):
 def call_upstream(route: str, model: str, body: dict[str, Any], label: str, *, retries: int = 5) -> dict[str, Any]:
     last: Optional[str] = None
     for attempt in range(1, retries + 1):
+        _RATE_LIMITER.wait()
         try:
             with _route_context(route, model):
                 data, cost = server._messages(server._finalize_upstream_body(body, model), label)
             return {"data": data, "cost": cost}
         except server.UpstreamError as e:
             last = str(e)
+            if ("requests/minute" in last or "request rate has exceeded" in last) and attempt < retries:
+                # The account-level ceiling this limiter exists for. Wait out a full window
+                # rather than the short exponential backoff below — a few seconds isn't
+                # enough once the account is already over its per-minute cap.
+                time.sleep(20)
+                continue
             if any(str(s) in last for s in RETRY_STATUS) and attempt < retries:
                 time.sleep(min(20, 4 * attempt))
                 continue
