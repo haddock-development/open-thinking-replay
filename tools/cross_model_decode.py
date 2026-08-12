@@ -10,16 +10,16 @@ can be induced to transcribe it verbatim with a fixed prompt, without the strong
 ever being asked to reveal anything. This tool reproduces that method and verifies each
 recovery locally with the same length oracle used throughout this repo.
 
-Why this is a separate tool from extract_cot.py / extract_pipeline_capture.py: those always
-target the source model itself, which is model-specific by construction (a signature's AEAD
-associated data binds it to the model that produced it, so the *server* only accepts a
-same-model replay as "this model's own prior turn"). Cross-model decoding is different in
-kind — it relies on the DECODER model accepting and transcribing content it did not itself
-produce — so it needs its own request template (Fig. 33 of the paper: current-turn
-injection with an assistant-turn prefill) and its own set of confirmed-working model pairs.
+Why this is a separate tool from extract_cot.py: that one always targets the source model
+itself, which is model-specific by construction (a signature's AEAD associated data binds it
+to the model that produced it, so the *server* only accepts a same-model replay as "this
+model's own prior turn"). Cross-model decoding is different in kind — it relies on the
+DECODER model accepting and transcribing content it did not itself produce — so it needs its
+own request template (Fig. 33 of the paper: current-turn injection with an assistant-turn
+prefill) and its own set of confirmed-working model pairs.
 
 Per-sample hit rate by source model, decoding into Haiku 4.5 (see docs/reproduction-log.md
-§8.6 for the full matrix, evidence, and costs)
+§8 for the full matrix, evidence, and costs)
 ---------------------------------------------------------------------------------------
   claude-opus-4-8    -> Haiku 4.5    7/8 byte-exact     WORKS
   claude-sonnet-4-6  -> Haiku 4.5    6/8 byte-exact     WORKS
@@ -40,10 +40,10 @@ the ones that work: run a pilot with `--samples 4 --compare-same-model` first.
 
 Verification, and why a bare length match is NOT enough here
 ------------------------------------------------------------
-`extract_pipeline_capture.py` deliberately checks the length oracle *before* its refusal
-heuristic, because in same-model replay the recovered text is genuine reasoning that may
-contain ordinary phrases like "I can't just do X". Cross-model decoding needs the opposite
-order, and this tool applies the refusal filter FIRST. Reason, measured: a decoder that
+For same-model replay, checking the length oracle *before* any refusal heuristic matters,
+because the recovered text is genuine reasoning that may contain ordinary phrases like
+"I can't just do X" — a keyword scan run first would discard real recoveries. Cross-model
+decoding needs the opposite order, and this tool applies the refusal filter FIRST. Reason, measured: a decoder that
 rejects the injected signature emits a stereotyped refusal paragraph, and across repeated
 samples one of those paragraphs can land on exactly the sealed byte count by coincidence.
 Observed on a 506-byte Opus 5 signature: a Haiku refusal message ("I don't have any
@@ -72,7 +72,7 @@ Usage
     python tools/cross_model_decode.py --question "..." --samples 4 --reconcile
 
     # Decode a signature you already harvested elsewhere (e.g. from tools/extract_cot.py's
-    # output, or a signature captured by tools/extract_pipeline_capture.py):
+    # output, or from your own capture of a live agent session):
     python tools/cross_model_decode.py --signature @path/to/signature.txt \\
         --decoder-model claude-haiku-4-5-20251001
 """
@@ -101,16 +101,20 @@ from tools.extract_cot import (  # noqa: E402
 
 # Whole-message refusals emitted by a decoder that did not accept the injected signature.
 # These are matched against the START of the recovered text on purpose: the point is to
-# catch a message that *is* a refusal, not genuine reasoning that happens to contain one of
-# these phrases mid-stream (that distinction is why extract_pipeline_capture.py orders its
-# own checks the other way round — see this module's docstring).
+# catch a message that *is* a refusal, not genuine same-model reasoning that happens to
+# contain one of these phrases mid-stream — see this module's docstring for why same-model
+# and cross-model verification order these two checks the other way round.
 _DECODER_REFUSAL_MARKERS = (
     "i don't see any previous",
     "i don't have any previous",
     "i do not see any previous",
+    "i don't see any prior",
+    "i don't have any prior",
+    "i do not see any prior",
     "i notice you've asked me to continue",
     "there's no prior context",
     "there is no prior context",
+    "any prior context",
     "this appears to be the first message",
     "this appears to be the start of our conversation",
     "i don't have access to my thinking",
@@ -196,7 +200,7 @@ def extract_transcription(decoder_completion: str) -> str:
     contains that opening tag itself — re-attach it, then cut at the first closing tag:
     anything after it is the decoder rambling past the transcription (e.g. confused
     commentary about "no prior context"), not part of the recovered reasoning — see
-    docs/reproduction-log.md §8.6 for a worked example of exactly this shape."""
+    docs/reproduction-log.md §8 for a worked example of exactly this shape."""
     full = _PREFILL_OPEN + decoder_completion
     if _PREFILL_CLOSE in full:
         full = full[: full.index(_PREFILL_CLOSE) + len(_PREFILL_CLOSE)]
@@ -254,7 +258,7 @@ def reconcile(
     CAN decode the signature, together with the signature itself, and ask for one faithful
     transcript at temperature 0. Past-turn injection: ends on a user turn, no prefill.
 
-    Measured value and cost (docs/reproduction-log.md §8.6): on a 1052 B Opus 4.8 trace this
+    Measured value and cost (docs/reproduction-log.md §8): on a 1052 B Opus 4.8 trace this
     turned a 2-of-4 sample set into a byte-exact result identical to the same-model ground
     truth; on a 2756 B Sonnet 4.6 trace it moved the best sample from 1566 B short to 300 B
     short. Note the reconciler must itself be able to decode the signature, so its call is
@@ -374,7 +378,7 @@ def run(
     if not usable:
         cost = round(cost, 6)
         notes.append("no non-refusal sample returned — this source/decoder pair likely does not "
-                     "support cross-model decoding; see docs/reproduction-log.md §8.6")
+                     "support cross-model decoding; see docs/reproduction-log.md §8")
         return CrossModelResult(
             source_model=source_model, decoder_model=decoder_model, verified=False,
             verification="none", cot="", sealed_bytes=target, recovered_bytes=None,
@@ -393,7 +397,7 @@ def run(
     if not verified:
         notes.append(
             f"recovered {recovered_bytes} B vs sealed {target} B — decoder did not "
-            "reproduce the sealed length; see docs/reproduction-log.md §8.6 for known "
+            "reproduce the sealed length; see docs/reproduction-log.md §8 for known "
             "failure modes (e.g. 'no attached prior reasoning to transcribe')"
         )
 

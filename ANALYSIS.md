@@ -157,7 +157,7 @@ targeting the *weakest, least-safeguarded* sibling model as a decoder rather tha
 same-family model chosen for capability.
 
 We reproduced their Claude method over a full source × decoder matrix
-(`tools/cross_model_decode.py`; results in `docs/reproduction-log.md` §8.6). The §6 result
+(`tools/cross_model_decode.py`; results in `docs/reproduction-log.md` §8). The §6 result
 above — that the requesting model is not checked against header `#6` — still holds for every
 Claude model measured **except `claude-opus-5`**: Opus 4.8, Opus 4.6, Sonnet 4.6 and
 Sonnet 5 signatures are all decoded byte-exactly by Haiku 4.5, while an Opus 5 signature was
@@ -168,7 +168,7 @@ differ between two models of the same generation.
 
 ## 7. Verbatim recovery adjudication (H0 vs H1)
 
-Measured on Distill route `naci_default` / `claude-sonnet-4-6` (55 upstream calls; report kept
+Measured on a gateway route / `claude-sonnet-4-6` (55 upstream calls; report kept
 in the experimental workspace as
 `logs/raw/20260807T091219_525967_signature_H0_vs_H1_adjudication_report.json`).
 
@@ -261,7 +261,7 @@ primitive with three different bindings left unchecked:
 | --- | --- | --- |
 | In-/cross-session replay | session | this repo's baseline (§2, §4); Green (2026) |
 | Cross-user replay | user/account | Green (2026); Panfilov et al. (2026) §4.1 |
-| Cross-model replay | model | §6 above; Panfilov et al. (2026); `docs/reproduction-log.md` §8.6 |
+| Cross-model replay | model | §6 above; Panfilov et al. (2026); `docs/reproduction-log.md` §8 |
 
 Read this way, the `claude-opus-5` result in §6 stops being a puzzle. Opus 5 isn't running
 different cryptography — same envelope format, same length oracle, same server-side
@@ -290,7 +290,7 @@ AEAD 信封（见 §1）；把它塞进某次请求的历史消息，作为一�
 | --- | --- | --- |
 | 同/跨会话回放 | 会话 | 本仓库基线方法（§2、§4）；Green (2026) |
 | 跨用户回放 | 用户/账号 | Green (2026)；Panfilov 等 (2026) §4.1 |
-| 跨模型回放 | 模型 | 上文 §6；Panfilov 等 (2026)；`docs/reproduction-log.md` §8.6 |
+| 跨模型回放 | 模型 | 上文 §6；Panfilov 等 (2026)；`docs/reproduction-log.md` §8 |
 
 这样看，§6 里 `claude-opus-5` 的结果就不再是个谜。Opus 5 用的不是另一套密码学——同样的信封
 格式、同样的长度预言机、同样的服务端解密再注入（它能逐字节解开自己的 signature）。变了的是

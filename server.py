@@ -165,13 +165,26 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 # --------------------------------------------------------------------------- #
 # Pricing (USD per 1,000,000 tokens). Extended-thinking tokens are billed as
-# output tokens and are already included in usage.output_tokens. Override the
-# whole table with PRICES_JSON, e.g. '{"claude-opus-4-8":{"input":15,"output":75}}'.
+# output tokens and are already included in usage.output_tokens. cache_write
+# is the 5-minute-TTL rate (1-hour TTL is 1.6x this for every family below).
+# Override the whole table with PRICES_JSON, e.g.
+# '{"claude-opus-4-8":{"input":15,"output":75}}'.
+#
+# Source: https://platform.claude.com/docs/en/about-claude/pricing (checked
+# 2026-08-12). Opus and Haiku below were previously priced at the retired
+# Opus 4/4.1 and Haiku 3.5 rate cards ($15/$75 and $0.80/$4) respectively —
+# every current Opus release (4.5 through 5) and Haiku 4.5 share one rate per
+# family regardless of point version, so this is a single correction, not a
+# per-model lookup. Verify against the live pricing page before relying on
+# this table for anything beyond a rough estimate; provider gateways can also
+# bill at a different rate than Anthropic's own list price.
 # --------------------------------------------------------------------------- #
 DEFAULT_PRICES: dict[str, dict[str, float]] = {
-    "claude-opus":   {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.50},
-    "claude-sonnet": {"input": 3.0,  "output": 15.0, "cache_write": 3.75,  "cache_read": 0.30},
-    "claude-haiku":  {"input": 0.80, "output": 4.0,  "cache_write": 1.0,   "cache_read": 0.08},
+    "claude-opus":   {"input": 5.0,  "output": 25.0, "cache_write": 6.25, "cache_read": 0.50},
+    "claude-sonnet": {"input": 3.0,  "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
+    "claude-haiku":  {"input": 1.0,  "output": 5.0,  "cache_write": 1.25, "cache_read": 0.10},
+    "claude-fable":  {"input": 10.0, "output": 50.0, "cache_write": 12.50, "cache_read": 1.0},
+    "claude-mythos": {"input": 10.0, "output": 50.0, "cache_write": 12.50, "cache_read": 1.0},
 }
 FALLBACK_PRICE = {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30}
 

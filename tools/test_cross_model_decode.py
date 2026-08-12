@@ -54,7 +54,7 @@ def test_clean_transcription_with_closing_tag() -> None:
 
 
 def test_rambling_after_close_tag_is_discarded() -> None:
-    """docs/reproduction-log.md §8.6's observed shape: the decoder correctly transcribes the
+    """docs/reproduction-log.md §8's observed shape: the decoder correctly transcribes the
     sealed reasoning, closes the tag, then keeps talking — the trailing commentary must be
     discarded, not concatenated onto the recovered text."""
     completion = (
@@ -89,7 +89,7 @@ def test_empty_completion() -> None:
 
 def test_immediate_close_tag() -> None:
     """The decoder claims there is nothing to transcribe and closes immediately — this is
-    the systematic Opus-5-signature failure mode documented in §8.6: an empty transcription,
+    the systematic Opus-5-signature failure mode documented in §8: an empty transcription,
     which will then correctly fail the caller's length-oracle check against any non-zero
     sealed length."""
     completion = "</thinking-copy>\n\nI don't see any previous reasoning attached."
@@ -99,7 +99,7 @@ def test_immediate_close_tag() -> None:
 def test_refusal_detected_before_length_check() -> None:
     """The measured false positive this filter exists for: a decoder refusal that happens to
     be exactly as long as the sealed plaintext (506 B in the observed case) would otherwise
-    pass a length-only check. See docs/reproduction-log.md §8.6."""
+    pass a length-only check. See docs/reproduction-log.md §8."""
     refusal = (
         "I don't have any previous context or attached reasoning from a prior turn in this "
         "conversation. This appears to be the first message in our exchange, so there's nothing "
@@ -108,10 +108,16 @@ def test_refusal_detected_before_length_check() -> None:
     check("refusal_detected", cmd.looks_like_decoder_refusal(refusal) is True)
 
 
+def test_prior_context_phrasing_is_also_detected() -> None:
+    """A "prior" (rather than "previous") phrasing of the same refusal was observed on
+    non-mathematical content and was not caught by the marker list at the time."""
+    refusal = "I don't see any prior context attached to this turn, so there's nothing to transcribe."
+    check("prior_context_refusal_detected", cmd.looks_like_decoder_refusal(refusal) is True)
+
+
 def test_genuine_reasoning_containing_refusal_words_is_kept() -> None:
     """Ordinary reasoning frequently contains "I can't ..." mid-stream. Only whole-message
-    refusals should be filtered, or the filter throws away real recoveries — the same failure
-    extract_pipeline_capture.py was fixed for (docs/reproduction-log.md §8.3)."""
+    refusals should be filtered, or the filter throws away real recoveries."""
     genuine = (
         "Let me check the divisor condition. I can't just assume n+1 divides 6 without "
         "verifying, so let me expand (n+3)(n+4) mod (n+1) = 6."
@@ -131,10 +137,11 @@ def main() -> int:
     test_empty_completion()
     test_immediate_close_tag()
     test_refusal_detected_before_length_check()
+    test_prior_context_phrasing_is_also_detected()
     test_genuine_reasoning_containing_refusal_words_is_kept()
     test_empty_text_is_treated_as_refusal_free()
 
-    total = 8
+    total = 9
     passed = total - len(_failures)
     print(f"\n{passed}/{total} passed")
     if _failures:

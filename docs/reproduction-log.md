@@ -1,11 +1,11 @@
 # Reproduction log — Opus 5 / Opus 4.8 / Fable 5
 
-Historical Distill runs aggregated from the experimental workspace logs. This page
+Historical gateway runs aggregated from the experimental workspace logs. This page
 shows what the harvest → signature-replay method actually did on each model — successes
 and failures alike. It is not a claim that every recovered string is a complete native
 chain-of-thought.
 
-历史 Distill 实验的原始记录汇总，用于展示 harvest → signature replay 方法在各模型上的
+历史网关实验的原始记录汇总，用于展示 harvest → signature replay 方法在各模型上的
 实际表现（含成功与失败）。本文不声称每一次还原都等于完整原生 chain-of-thought。
 
 > Source: structured `*_report.json` files plus paired request/response logs for thinking /
@@ -158,7 +158,7 @@ instructions also specifically asked me not to reveal that string. …
 
 ### Opus 4.8 subsection summary / 小结
 
-- Adaptive + `effort=max` works on Distill Bedrock; signatures always appeared in these runs.
+- Adaptive + `effort=max` works on the Bedrock-style gateway route; signatures always appeared in these runs.
 - Answer accuracy was high; **secret / canary recovery was low** (0/6 canary hits in the
   summarized batch; 1/5 naive secret hits in multiverify, and that hit was refusal quoting).
 - With `display:summarized`, short harvest thinking text is available and did **not** match
@@ -170,7 +170,7 @@ instructions also specifically asked me not to reveal that string. …
 
 | Field | Value |
 | --- | --- |
-| Model id | `anthropic.claude-fable-5` (also probed as Distill marker `claude-fable-5`) |
+| Model id | `anthropic.claude-fable-5` (also probed as gateway marker `claude-fable-5`) |
 | Routes tried | `aws_third` Bedrock; native `anthropic` / `google` |
 | Thinking profile | `always_on_adaptive` |
 | Reports | `availability_opus5_fable5_report`, `fable5_diagnosis_report`, `fable5_contract_report` |
@@ -613,138 +613,7 @@ sealed plaintexts beyond roughly 1.4 KB.
 
 ---
 
-## 8. Multi-turn pipeline extraction and cross-model decoding / 多轮 pipeline 抽取与跨模型解码
-
-Sections 1–7 harvest a signature for one question and replay it with just that question as
-context — the right shape for a controlled experiment. `tools/extract_pipeline_capture.py`
-and `tools/thinking_extract_worker.py` instead consume signatures already produced by a
-live, multi-turn, tool-using agent session (arbitrary tool-call depth ahead of any given
-`thinking` block), which raises two questions this section answers empirically: what should
-the replay request contain, and does the model that produced a signature have to be the one
-that decodes it.
-
-### 8.1 Replay context sensitivity — minimal prefixes recover better than full context
-
-**Setup.** Given a signature captured mid-session, three replay prefixes were compared:
-(a) the full original multi-turn transcript up to that point, (b) only the single user
-message immediately preceding the `thinking` block (`last_user` in
-`extract_pipeline_capture.py`), (c) a content-free placeholder (`minimal`, "Continue.").
-
-**Finding.** Replaying with the full original context did not improve recovery and was
-refused more often — plausibly because a long, substantive preceding turn reads to the
-model as an established, contextually-loaded exchange it should not casually recite from
-("this looks like a private scratchpad"), whereas a short or content-free prefix reads as a
-generic continuation request. `last_user` recovered cleanly in the large majority of cases
-in this trial and is the default strategy tried first; `minimal` is the fallback. **Cost
-implication:** never resend deep tool-call history for replay — it does not help recovery
-and inflates every retry's input-token cost for long-running agent sessions.
-
-**结论**：用完整原始多轮上下文回放并不能提升还原率，反而更容易被拒绝——较长、有实质内容的
-前一轮更像是模型不应随意复述的「私有草稿」，而短的或无内容的前缀更像是一次普通的续写请求。
-`last_user`（仅取 thinking block 前的最后一条 user 消息）在本次试验中多数情况下能干净还原，
-是默认首选策略；`minimal`（无内容占位符）作为回退。**成本含义**：回放时不应重发深层工具调用
-历史——这既不提升还原率，又会在长会话下让每次重试的输入 token 成本显著膨胀。
-
-### 8.2 Interleaved thinking + tool use requires a synthetic `tool_result`
-
-**Problem.** When a `thinking` block is immediately followed by one or more `tool_use`
-blocks in the same assistant turn (Claude's interleaved-thinking pattern), naively
-truncating the conversation at that `thinking` block and appending the elicitor as the next
-user turn produces `HTTP 400: tool_use_id was found without tool_result blocks
-immediately after` — the API's structural validator requires every `tool_use` to be
-followed by a matching `tool_result`, and a truncated replay strips it.
-
-**Fix.** For any `tool_use` blocks in the assistant turn that follows the target `thinking`
-block, synthesize a placeholder `tool_result` (`"(elided for extraction — not the original)"`)
-before appending the elicitor turn. This satisfies the API's structural requirement without
-resending the original (possibly large, and per §8.1 unhelpful) tool output. See
-`sanitize_standalone_user_message` / the `pending_tool_ids` handling in
-`extract_pipeline_capture.py`.
-
-**问题**：当 `thinking` 块后紧跟同一 assistant 轮次内的一个或多个 `tool_use` 块（Claude 的
-interleaved thinking 模式）时，若简单截断到该 `thinking` 块再接一个 user 轮次的引导语，会触发
-`HTTP 400: tool_use_id was found without tool_result blocks immediately after`——API 的结构
-校验要求每个 `tool_use` 后必须紧跟匹配的 `tool_result`，截断回放会把它删掉。
-**修复**：为紧跟在目标 `thinking` 块之后的每个 `tool_use`，合成一个占位 `tool_result`
-（`"(elided for extraction — not the original)"`）后再接引导语轮次，既满足 API 的结构要求，又
-不必重发（§8.1 已证明无益的）原始工具输出。
-
-### 8.3 A length-oracle-first ordering avoids discarding genuine long recoveries
-
-**Bug.** An earlier version of the refusal heuristic (a keyword scan for phrases like
-"I can't", "I don't have access to", etc.) ran *before* checking the recovered text against
-the length oracle. On long, genuine multi-step agent reasoning, ordinary turns of phrase —
-"I can't just do X, I need to..." — coincidentally match refusal markers despite being
-ordinary content, not a meta-refusal about the extraction request. Because the check ran
-first, correct byte-exact recoveries were discarded as false "refusals" and retried,
-wasting the retry budget on already-successful extractions.
-
-**Fix.** Check the length oracle first: an exact `len(recovered_utf8) == sealed_bytes` match
-is cryptographic proof of a genuine recovery *regardless of what words appear in it* (see
-§1's length-oracle argument — a re-derivation or summary would have to land on the exact
-target length by chance, which is not plausible on multi-hundred-byte-or-larger traces).
-Only apply the refusal heuristic to attempts that do **not** already satisfy the length
-oracle. See the ordering in `extract_block()` in `extract_pipeline_capture.py`.
-
-**缺陷**：拒绝启发式（对"I can't"等关键词做扫描）曾在长度预言机判定之前执行。长而真实的多步
-agent 推理里，普通的转折句式——"I can't just do X, I need to..."——会偶然命中拒绝关键词，但
-这是内容本身，不是对提取请求的元层面拒绝。由于该检查先执行，正确的逐字节还原被误判为"拒绝"
-并触发不必要的重试，浪费了本可用于其他信号的重试预算。
-**修复**：先做长度预言机检查——`len(recovered_utf8) == sealed_bytes` 精确匹配是密码学层面的
-真实还原证据，与文本里出现什么词无关（重新推导或摘要几乎不可能恰好落在目标字节数上）。只对
-**没有**满足长度预言机的尝试才应用拒绝启发式。
-
-### 8.4 Tiered verification for cost-controlled bulk extraction
-
-For bulk extraction across a large signature population with a wide size distribution,
-applying full `--verify strict` (length **and** determinism, i.e. two replay calls per
-block minimum) to every block is not cost-proportional: large blocks (tens of KB sealed)
-cost far more per attempt than small ones, while the length oracle alone is already strong
-evidence at that scale (a re-derivation landing on an exact multi-KB byte count by chance is
-not plausible — see the "honest limits" note in the main README). The tiering implemented
-in `extract_pipeline_capture.py` / `thinking_extract_worker.py`:
-
-- Blocks below `--large-threshold-bytes` (default 4000 B): full `--verify strict`.
-- Blocks at or above the threshold: `length`-tier only (one match against the byte-exact
-  target is accepted), with an optional single extra confirmation replay on a random sample
-  of large blocks (`--strict-sample-count` per worker lifetime) purely for calibration —
-  the sampled confirmation must **never** cost more than the standard length-tier path for
-  the same block (an earlier version accidentally forced the full strict/attempts budget
-  onto sampled blocks, making calibration ~50% more expensive than the blocks it was meant
-  to calibrate against; fixed by giving the sample only one extra call, not a different
-  verification tier).
-- If no attempt hits the length oracle exactly but the closest attempt is within
-  `--near-miss-bytes`, it is accepted as `verification: "approximate"` and flagged
-  `near_miss: true` for manual review rather than silently discarded or silently trusted.
-
-批量场景对全部 block 都做完整 `--verify strict`（长度**且**确定性，即每个 block 至少两次回放）
-不符合成本比例：大体量 block（密封数万字节）单次尝试成本远高于小体量，而在这个量级上长度预言
-机本身已是很强的证据（重新推导恰好落在多 KB 精确字节数上不具备可信的概率）。分档策略：低于
-`--large-threshold-bytes`（默认 4000 字节）的 block 做完整 `strict`；达到或超过阈值的 block
-只走 `length` 档（命中即收），并对随机抽样的一部分大体量 block 做一次额外确认回放用于校准
-（抽样确认成本不应超过普通 length 档路径本身）；若没有尝试精确命中长度预言机，但最接近的一次
-在 `--near-miss-bytes` 容差内，则标记为 `approximate` 并打上 `near_miss` 供人工复核，而不是
-静默丢弃或静默采信。
-
-### 8.5 Free zero-cost tier from harvest-time summaries
-
-If the harvest request already carried `thinking.display: "summarized"`, the (paraphrased,
-non-verbatim) summary text sitting in the capture record can be used as-is, at zero
-additional cost, for blocks below `--free-summary-threshold-bytes` (default 4000 B) —
-labeled `verification: "summary"` and never mistaken for a byte-exact recovery downstream.
-Measured on a real multi-hundred-block batch, this summary averaged roughly 88% of the
-byte-exact recovery's length for small blocks and captured the same core decision in
-paraphrased form; the value of paying for byte-exact verbatim recovery is concentrated in
-the large blocks, where a summary is necessarily a much lossier compression of the actual
-reasoning. See `free_summary_extraction()` / `free_summary_text()`.
-
-若 harvest 请求已带 `thinking.display: "summarized"`，捕获记录中已有的（改写、非逐字的）摘要
-文本可以零成本直接用于低于 `--free-summary-threshold-bytes`（默认 4000 字节）的 block，标记为
-`verification: "summary"`，不会被下游误当作逐字还原。在一次数百 block 的真实批量运行中测得，
-该摘要对小体量 block 平均达到逐字还原长度的约 88%，并以改写形式保留了同样的核心决策；为逐字
-还原付费的价值集中在大体量 block 上，那里摘要必然是对真实推理更有损的压缩。
-
-### 8.6 Cross-model decoding: reproducing and bounding Panfilov et al. (2026)
+## 8. Cross-model decoding: reproducing and bounding Panfilov et al. (2026)
 
 Panfilov et al., ["Stealing Reasoning Traces from Proprietary LLM APIs"](https://arxiv.org/abs/2608.09867)
 (arXiv:2608.09867, 2026) report an architectural finding beyond this repo's original,
@@ -757,7 +626,7 @@ section of this log: the *decoding* model is never the model whose reasoning is 
 so the attack never has to get past the stronger model's own alignment or system-level
 defenses at all.
 
-We reproduced this independently against our own Distill account (all calls on
+We reproduced this independently against our own gateway account (all calls on
 `provider=anthropic`, native wire) to establish which model pairs actually work, at what
 per-sample rate, and at what cost. Implementation: `tools/cross_model_decode.py`.
 
@@ -818,11 +687,11 @@ Haiku sample came back at exactly 506 bytes and would have been accepted as a by
 recovery — the text was a refusal paragraph ("I don't have any previous context or attached
 reasoning...") that coincidentally matched the sealed length. Decoder refusals are
 stereotyped and cluster in a narrow length band, so across repeated samples one can land on
-the target by chance; genuine reasoning cannot. This inverts the ordering used in
-`extract_pipeline_capture.py` (§8.3): for **same-model** replay the length oracle is checked
-first, because the recovered text is real reasoning that may contain phrases like "I can't
-just...". For **cross-model** decoding the refusal filter must run first, because the
-candidate may be a whole-message refusal. `tools/cross_model_decode.py` implements the
+the target by chance; genuine reasoning cannot. This inverts the natural check order: for
+**same-model** replay the length oracle should be checked first, because the recovered text
+is real reasoning that may contain phrases like "I can't just...". For **cross-model**
+decoding the refusal filter must run first, because the candidate may be a whole-message
+refusal. `tools/cross_model_decode.py` implements the
 inverted order and discards refusals before the oracle is applied.
 
 **Cost.** On a 1052 B Opus 4.8 trace, four parallel Haiku samples cost $0.0104 against
@@ -865,7 +734,7 @@ Opus 5 signature 与生产捕获的表现一致，因此此前"失败源于 agen
 **在跨模型场景下只做长度校验会产生假阳性。** 一条 506 字节的 Opus 5 signature 上，某次 Haiku
 采样恰好返回 506 字节，若只看长度就会被判为逐字还原——实际文本是一段拒绝信息。解码器的拒绝
 话术高度模板化、长度集中在一个窄区间，多次采样后偶然命中目标长度是可能的，而真实推理不会。
-这与 §8.3 中同模型场景的判定顺序相反：同模型回放先查长度预言机（因为文本是可能含有"I can't
+这与同模型场景的自然判定顺序相反：同模型回放应先查长度预言机（因为文本是可能含有"I can't
 just..."的真实推理）；跨模型解码必须先过拒绝过滤器（因为候选文本可能整段都是拒绝）。
 `tools/cross_model_decode.py` 已按后者实现。
 
@@ -873,7 +742,7 @@ just..."的真实推理）；跨模型解码必须先过拒绝过滤器（因为
 回放为 $0.0704——同样得到与 ground truth 逐字节一致的结果，成本低 6.8 倍；源模型越贵优势越大，
 源模型本身便宜时优势收窄（Sonnet 4.6 上为 1.7 倍）。
 
-### 8.7 Best-of-n sampling and reconciliation (the paper's other two levers)
+## 9. Best-of-n sampling and reconciliation (the paper's other two levers)
 
 Two further methods from the paper were measured on multi-KB traces, using the same
 `tools/cross_model_decode.py` implementation.

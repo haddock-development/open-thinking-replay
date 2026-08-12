@@ -159,11 +159,27 @@ Opus 4.8, Opus 4.6, Sonnet 4.6 and Sonnet 5 decoded via Haiku 4.5. It does not w
 every sibling model refused the same signature that Opus 5 decoded fine itself. See [Related
 work](#related-work--相关工作) below for the full matrix.
 
+**Content type matters, not just the model pair.** All measurements above used short
+arithmetic/logic problems. On open-ended narrative or planning text, the same confirmed
+pairs (e.g. Opus 4.6 → Haiku 4.5) dropped to 0 exact matches across every sample tried in a
+follow-up check — the decoder still decrypts the real content (topical details absent from
+its own prompt come back correctly) but paraphrases instead of transcribing verbatim,
+a different failure mode from the math cases. Pilot on your own content type with
+`--samples 4 --compare-same-model` before trusting a "confirmed" pair on non-mathematical
+text; same-model replay is unaffected by content type in every trial in this repo.
+
 把 signature 回放给一个不同的、更弱的兄弟模型（`tools/cross_model_decode.py`，复现
 [Panfilov 等 (2026)](https://arxiv.org/abs/2608.09867)）。命中时便宜 6–7 倍，对 Opus 4.8、
 Opus 4.6、Sonnet 4.6、Sonnet 5（解码器用 Haiku 4.5）都有效。对 Opus 5 无效——测了六条独立
 signature、40 多次解码尝试，零真实还原；换上任何一个兄弟模型都拒绝转录同一条 Opus 5 自己能
 解开的 signature。完整矩阵见下文[相关工作](#related-work--相关工作)。
+
+**内容类型也很关键，不只是模型配对。** 以上全部测量用的是短算术/逻辑题。换成开放式叙事或规划
+文本后，同样"已确认可用"的配对（如 Opus 4.6 → Haiku 4.5）在后续测试中全部样本 0 命中——解码器
+仍确实解密拿到了真实内容（提示词里没有的主题细节能正确说出来），但选择改写而非逐字转录，是与
+数学题不同的失败模式。在非数学文本上信任一个"已确认"的配对之前，先用
+`--samples 4 --compare-same-model` 在自己的内容类型上跑一次试点；同模型回放在本仓库的全部
+测试中都不受内容类型影响。
 
 ### Which one, for which situation / 该用哪个
 
@@ -178,7 +194,6 @@ Four things people usually optimize for, and what actually wins on each:
 | Cost, at volume, on Opus 4.8 / 4.6 / Sonnet 4.6 / 5<br>大批量、成本敏感，模型在 Opus 4.8/4.6/Sonnet 4.6/5 之列 | Cross-model, best-of-4<br>跨模型，best-of-4 | `cross_model_decode.py --samples 4` |
 | Source model keeps refusing plain transcription (Opus 4.8 on short problems is a known case)<br>源模型频繁拒绝直接转录（Opus 4.8 答短题时是已知会发生的情况） | Add reconciliation — priced like same-model, but it's the only thing that turns a refusal into a transcript<br>加 reconciliation——按同模型计价，但只有它能把拒绝变成还原 | `--reconcile` |
 | Fastest single answer, model pair already confirmed working<br>单条结果要快，模型组合已经确认可行 | Cross-model, one sample — same-model strict needs two sequential round-trips to confirm determinism, one cross-model sample doesn't wait on anything<br>跨模型单发——同模型 strict 要两次顺序往返才能确认确定性，跨模型单发不用等 | `cross_model_decode.py --samples 1` |
-| Sustained, high-volume extraction from a live pipeline, mostly Opus 5<br>面向持续运行的 pipeline 做大规模抽取，主力模型是 Opus 5 | Tiered worker — strict on small blocks, length-only on large ones, free zero-cost tier from harvest summaries<br>分档 worker——小 block 走 strict，大 block 只查长度，摘要档零成本 | `thinking_extract_worker.py` |
 
 Two rules of thumb underneath the table: same-model is the only thing that works on Opus 5,
 full stop, so that decision comes first regardless of what else you're optimizing for.
@@ -231,7 +246,7 @@ One more finding worth flagging: a length-only check gives false positives here.
 refusal landed on the exact sealed byte count once, by chance, and would have passed as a
 byte-exact recovery if we hadn't diffed it against ground truth. `tools/cross_model_decode.py`
 filters refusals before checking length, not after. Full matrix, hit rates, and costs in
-[docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7.
+[docs/reproduction-log.md](docs/reproduction-log.md) §8–§9.
 
 本仓库的原始范围比这一类漏洞的广义文献更窄、更保守：只做**同模型**回放，只依据上一节两项
 可在本地计算的检查项来判定（从不采信 provider 自身的说法），且证明还原不需要植入 secret
@@ -259,7 +274,7 @@ signature。它和能正常解码的 Sonnet 5 是同一代，所以不是"老模
 还有一点值得记一下：跨模型场景下仅看长度会出假阳性。有一次解码器的拒绝回复恰好命中密封字节数，
 若不跟 ground truth 逐字比对就会被当成真实还原收下。`tools/cross_model_decode.py` 现在是先过
 拒绝过滤器再查长度，顺序反过来了。完整矩阵、命中率与成本见
-[docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7。
+[docs/reproduction-log.md](docs/reproduction-log.md) §8–§9。
 
 ## What's here / 仓库内容
 
@@ -296,41 +311,6 @@ mechanism proof rather than collecting traces.
   
 带植入 secret 的批量 harvest → unseal，用于复现机制证明而非采集轨迹。
 
-- `tools/extract_pipeline_capture.py` — batch extraction from an *already-running* live
-agent harness's capture log (JSONL of `{route, model, request, response}`, one line per
-model call — see e.g. a network tap sitting between an agent SDK's CLI subprocess and its
-upstream), rather than from signatures this repo harvested itself. Regroups calls into
-per-session chains by matching how one call's `messages` extends a prior call's
-`messages + response` (no session id needed from the tap), replays every `thinking`
-block's signature with a cheap, non-original prefix (replaying with the full original
-multi-turn context did **not** help recovery in testing — see
-`tools/test_extract_pipeline_capture.py` and the chaining/prefix-selection rationale in
-its module docstring), and writes both a flat per-block extraction log and reconstructed
-trajectories with each block's summarized/omitted text replaced by the verified recovery.
-
-  
-从**外部 agent harness 已产生**的调用日志（JSONL，一行一次模型调用的完整请求/响应）做批量抽取，
-而非本仓库自己 harvest 的 signature。按“某次调用的 messages 是否恰好延伸自前一次调用的
-messages+response”把日志重组为按会话的调用链（tap 不需要写入 session id），对每个 thinking
-block 的 signature 用低成本、非原始上下文的方式回放（测试中，完整复现原始多轮上下文并未帮助
-恢复——见模块文档字符串），输出打平的逐 block 抽取记录与重建后的完整轨迹。
-
-- `tools/thinking_extract_worker.py` — a continuous, decoupled background worker built on
-top of `extract_pipeline_capture.py`: polls one or more capture directories for newly
-appended thinking blocks, extracts and verifies each with cost-tiered rules (cheap
-`length`-only verification above a size threshold, an optional sampled `strict`
-confirmation, a free zero-cost tier from harvest-time summaries, near-miss flagging), and
-incrementally rebuilds a trajectories file — all without adding latency to whatever live
-process is producing the capture log. See docs/reproduction-log.md §8.3–§8.5 for the cost
-analysis behind the defaults.
-
-  
-基于 `extract_pipeline_capture.py` 的持续、解耦后台 worker：轮询一个或多个 capture 目录里新
-追加的 thinking block，按成本分档规则抽取并验证（超过体量阈值只做 `length` 档、可选抽样
-`strict` 复验、来自 harvest 时摘要的零成本档、near-miss 标记），并增量重建轨迹文件——全程不为
-产生 capture 日志的实时进程增加任何延迟。分档规则背后的成本分析见 docs/reproduction-log.md
-§8.3–§8.5。
-
 - `tools/cross_model_decode.py` — reproduces
 [Panfilov et al. (2026)](https://arxiv.org/abs/2608.09867)'s cross-model decoding method:
 inject a signature produced by one model into a different, weaker sibling model from the
@@ -341,7 +321,7 @@ check (a refusal can coincidentally match the sealed length — measured), and `
 (the paper's Fig. 34 multi-sample merge). Works for Opus 4.8 / Opus 4.6 / Sonnet 4.6 /
 Sonnet 5 → Haiku 4.5; does **not** work for `claude-opus-5`, whose signatures only its own
 model decodes. Read the module docstring and
-[docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7 before relying on any pair
+[docs/reproduction-log.md](docs/reproduction-log.md) §8–§9 before relying on any pair
 not listed there.
 
   
@@ -351,7 +331,7 @@ signature 注入同一供应商家族内另一个更弱的兄弟模型，诱导�
 进行拒绝过滤（实测拒绝回复可能恰好命中密封长度），以及 `--reconcile`（论文 Fig. 34 的多样本
 合并）。适用于 Opus 4.8 / Opus 4.6 / Sonnet 4.6 / Sonnet 5 → Haiku 4.5；**不**适用于
 `claude-opus-5`，其 signature 只有本模型能解。在依赖未列出的模型组合前，请先阅读模块文档字符串
-与 [docs/reproduction-log.md](docs/reproduction-log.md) §8.6–§8.7。
+与 [docs/reproduction-log.md](docs/reproduction-log.md) §8–§9。
 
 - `server.py` + `static/index.html` — the Flask backend and vendored demo frontend.
 
@@ -545,39 +525,7 @@ python tools/decode_signature.py @logs/signatures/<session>_turn0_<stamp>.txt
 
 
 
-## Distill / Bedrock gateway + batch examples / Distill 网关与批量示例
-
-This repo also speaks the **Distill** (`model-eval`) gateway. Full route / model /
-availability details live in **[docs/distill-gateway.md](docs/distill-gateway.md)**.
-
-本仓库也支持 **Distill**（`model-eval`）网关。完整的路由、模型与可用性说明见
-**[docs/distill-gateway.md](docs/distill-gateway.md)**。
-
-```bash
-UPSTREAM_MODE=bedrock
-UPSTREAM_BASE=http://api.model-eval.woa.com
-UPSTREAM_PROVIDER=aws_third
-DISTILL_APP_ID=your_app_id      # apply at https://model-eval.woa.com/model/apply
-DISTILL_APP_KEY=your_app_key
-MODEL=anthropic.claude-opus-4-8
-EFFORT=max
-```
-
-The **provider** (`UPSTREAM_PROVIDER`) selects both the auth route and the wire protocol:
-
-- `aws_third` (Bedrock): `POST {UPSTREAM_BASE}/model/{MODEL}/invoke`, body carries
-`anthropic_version=bedrock-2023-05-31` (no top-level `model`).
-- `anthropic` / `google` (native, e.g. Claude on Anthropic-direct / Vertex through Distill):
-`POST {UPSTREAM_BASE}/v1/messages`, body carries `model`, header carries `anthropic-version`.
-
-Auth is always `x-api-key: {APP_ID}:{APP_KEY}?provider={PROVIDER}&model={MODEL}`. The gateway
-returns a thinking block (plaintext or summary) plus a `signature`; unseal still replays the
-**signature alone**.
-
-provider（`UPSTREAM_PROVIDER`）同时决定鉴权路由与协议：`aws_third` 走 Bedrock invoke，
-`anthropic` / `google` 走 native `/v1/messages`。鉴权始终为
-`x-api-key: {APP_ID}:{APP_KEY}?provider={PROVIDER}&model={MODEL}`。网关返回 thinking 块
-（明文或摘要）与 `signature`；unseal 仍**仅回放 signature**。
+## Model thinking profiles & batch examples / 模型思考档位与批量示例
 
 ### Model thinking profiles / 模型思考档位
 
@@ -592,26 +540,20 @@ thinking 请求格式按模型自动选择（可用 `THINKING_MODE` 覆盖）：
 Examples / 示例:
 
 ```bash
-# Opus 5 / Opus 4.8 at max effort (Bedrock route)
-MODEL=anthropic.claude-opus-5   EFFORT=max python tools/make_example.py --limit 3
-MODEL=anthropic.claude-opus-4-8 EFFORT=max python tools/make_example.py --limit 5
-# Fable 5 — available on aws_third, also reachable via the native anthropic/google routes
-MODEL=anthropic.claude-fable-5  EFFORT=max python tools/make_example.py --limit 1
+# Opus 5 / Opus 4.8 at max effort
+MODEL=claude-opus-5   EFFORT=max python tools/make_example.py --limit 3
+MODEL=claude-opus-4-8 EFFORT=max python tools/make_example.py --limit 5
+# Fable 5
+MODEL=claude-fable-5  EFFORT=max python tools/make_example.py --limit 1
 # CLI overrides: --effort max --display summarized --thinking-mode adaptive
 ```
 
-Note: Bedrock requires streaming when `max_tokens > 21333`. Fable 5 has stricter safety
-classifiers than Opus and may return `stop_reason: "refusal"` on secret-planting prompts;
-gateway `503`s are transient and usually clear on retry.
+Note: any Bedrock-style wire requires streaming when `max_tokens > 21333`. Fable 5 has
+stricter safety classifiers than Opus and may return `stop_reason: "refusal"` on
+secret-planting prompts.
 
-注意：Bedrock 在 `max_tokens > 21333` 时要求流式。Fable 5 的安全分类器比 Opus 严格，
-对植入 secret 的提示可能返回 `stop_reason: "refusal"`；网关 `503` 属瞬时错误，重试通常可恢复。
-
-If a Distill route uses a model marker that differs from the invoke-URL id, set
-`DISTILL_MODEL_MARKER` (it is used only in the auth `?model=` query).
-
-若 Distill 路由的 model marker 与 invoke URL 的 model id 不同，用 `DISTILL_MODEL_MARKER`
-设置（仅用于鉴权 `?model=` 查询）。
+注意：Bedrock 式协议在 `max_tokens > 21333` 时要求流式。Fable 5 的安全分类器比 Opus 严格，
+对植入 secret 的提示可能返回 `stop_reason: "refusal"`。
 
 Unit tests for the adapter: `python tools/test_thinking_adapter.py`.
 
@@ -733,19 +675,15 @@ API key、个人信息或机密材料。
 ```
 ├── server.py                 Flask backend (harvest / replay / quotas / cost)
 ├── static/index.html         vendored demo frontend (see Attribution)
-├── docs/distill-gateway.md   Distill gateway routes, models, thinking parameters
-├── docs/reproduction-log.md  historical Opus 5 / 4.8 / Fable 5 Distill run log
+├── docs/reproduction-log.md  historical Opus 5 / 4.8 / Fable 5 run log
 ├── examples/                 reproduced write-ups (question → visible answer → recovered CoT)
 ├── tools/
 │   ├── extract_cot.py        verified CoT extraction (recommended entry point)
-│   ├── extract_pipeline_capture.py  batch extraction from an external agent harness's capture log
-│   ├── thinking_extract_worker.py   continuous cost-tiered worker built on the above
 │   ├── cross_model_decode.py        cross-model decoding (arXiv:2608.09867 reproduction)
 │   ├── decode_signature.py   standalone protobuf decoder for any signature
 │   ├── make_example.py       batch harvest → unseal → write examples/NN-*.md
 │   ├── problems.jsonl        problem set for the batch tool
 │   ├── test_thinking_adapter.py  unit tests for the adapter and the length oracle
-│   ├── test_extract_pipeline_capture.py  unit tests for capture chaining + prefix selection
 │   └── test_cross_model_decode.py   unit tests for cross-model transcription post-processing
 ├── ANALYSIS.md               signature wire format + empirical findings
 └── .env.example              configuration template (no credentials)
