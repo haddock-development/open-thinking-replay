@@ -32,6 +32,9 @@ def _read_varint(buf: bytes, i: int) -> tuple[int, int]:
 
 def _b64decode(s: str) -> bytes:
     s = s.strip()
+    # haddock-development fork: newest-generation signatures (fable-5.1 et al)
+    # arrive URL-safe base64 (- and _). Normalize before strict decode.
+    s = s.replace("-", "+").replace("_", "/")
     return base64.b64decode(s + "=" * (-len(s) % 4))
 
 
