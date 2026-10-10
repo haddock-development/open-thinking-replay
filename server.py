@@ -521,6 +521,15 @@ def _endpoint_for(model: str) -> str:
 
 def _auth_headers(model: str) -> dict[str, str]:
     """Auth + content-type headers for the upstream call."""
+    if UPSTREAM_KEY.startswith("sk-or-v1"):
+        # OpenRouter gateway: Bearer auth on the Anthropic-compatible endpoint.
+        # (haddock-development fork: OpenRouter passes Anthropic thinking
+        #  signatures through on /api/v1/messages, verified 2026-10-10.)
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {UPSTREAM_KEY}",
+            "anthropic-version": ANTHROPIC_VERSION,
+        }
     if UPSTREAM_MODE == "bedrock":
         # The auth query may carry a distinct platform marker (?model=...) that differs
         # from the invoke-URL model id (e.g. "api_anthropic_claude-fable-5").
