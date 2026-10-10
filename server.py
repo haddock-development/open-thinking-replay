@@ -565,6 +565,15 @@ def _auth_headers(model: str) -> dict[str, str]:
         raise UpstreamError(
             "No API key configured. Set UPSTREAM_KEY (or ANTHROPIC_API_KEY)."
         )
+    # haddock-development fork: User-Keys (sk-ant-usr-...) need a workspace header.
+    workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    if workspace_id:
+        return {
+            "Content-Type": "application/json",
+            "x-api-key": UPSTREAM_KEY,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "anthropic-workspace-id": workspace_id,
+        }
     return {
         "Content-Type": "application/json",
         "x-api-key": UPSTREAM_KEY,
